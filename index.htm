@@ -68,7 +68,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.11"; // 臨時バージョン番号を更新
+const VERSION = "5.0.12"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
@@ -77,10 +77,10 @@ const $debugLog = $('#debug-log');
 
 // --- 定数/ステータス ---
 const STATUS_SUCCESS = 'Success';
-const STATUS_NOT_FOUND = 'Resource does not exist';
+const STATUS_NOT_FOUND = 'Resource does not exist'; // ユーザー/プロジェクトが存在しない、未共有
 const STATUS_INVALID = 'Invalid username'; 
 const STATUS_INVALID_PROJECT = 'Invalid project ID';
-const STATUS_ERROR = 'Error';
+const STATUS_ERROR = 'Error'; // その他のAPI通信エラー
 const STATUS_NO_INPUT = 'No input';
 const STATUS_NOT_REGISTERED = 'Account not registered'; // 内部でのみ使用
 const STATUS_ACCOUNT_INVALID = 'Account invalid'; // 内部でのみ使用
@@ -150,7 +150,7 @@ function displayResult(result) {
 }
 
 /**
- * ユーザーAPIからデータを取得する
+ * ユーザーAPIからデータを取得する (5.0.12: 404エラーハンドリング修正)
  */
 function getUserData(username) {
     logToScreen(`1. Fetching User Data for: ${username}`);
@@ -160,9 +160,11 @@ function getUserData(username) {
     })
     .then(function(userData) {
         logJson('User Proxy Response', userData); // JSONログ追加
+        // 存在しないユーザー名がJSONレスポンスで返ってきた場合
         if (userData.error === 'Resource does not exist' || userData.error === 'NotFound') {
             return { status: STATUS_NOT_FOUND, data: null };
         }
+        // 無効な文字を含むユーザー名がJSONレスポンスで返ってきた場合
         if (userData.error === 'Invalid username') {
             return { status: STATUS_INVALID, data: null };
         }
@@ -177,16 +179,21 @@ function getUserData(username) {
             }
         };
     })
-    .catch(function(reason) {
-        // API通信エラーや、jQueryのタイムアウトエラーなど
-        logToScreen(`1. User API failed for ${username}. Treating as Invalid.`, true);
-        // 無効な文字が原因の可能性が高いため、STATUS_INVALIDにフォールバック
-        return { status: STATUS_INVALID, data: null }; 
+    .catch(function(jqXHR, textStatus, errorThrown) {
+        // API通信エラーが発生した場合
+        if (jqXHR.status === 404) {
+            // 404の場合は「未登録 (Not Found)」として処理
+            logToScreen(`1. User API failed (404 Not Found). Treating as Not Found.`, true);
+            return { status: STATUS_NOT_FOUND, data: null };
+        }
+        // それ以外のエラー（無効な文字による通信エラーなど）は「Invalid」として処理
+        logToScreen(`1. User API failed (Status: ${jqXHR.status}). Treating as Invalid.`, true);
+        return { status: STATUS_INVALID, data: null };
     });
 }
 
 /**
- * プロジェクトJSONからメタデータを取得する (Proxyデータ優先抽出)
+ * プロジェクトAPIからメタデータを取得する
  */
 async function getProjectMetaData(projectId) {
     logToScreen(`2. Fetching Project Meta Data for ID: ${projectId} (Proxy/JSON Check)`);
@@ -194,8 +201,7 @@ async function getProjectMetaData(projectId) {
     let authorUsername = null;
     let projectIdInJson = null;
     let title = null;
-    let status = STATUS_ERROR;
-    let projectJsonText = null;
+    let status = STATUS_ERROR; // 初期値はエラー
 
     try {
         // 1. プロジェクトのトークンとメタデータを Proxy から取得
@@ -206,18 +212,19 @@ async function getProjectMetaData(projectId) {
         
         logJson('Project Proxy Response (Token Data)', tokenData); // JSONログ追加
 
-        // 2. エラーチェックを tokenData 取得直後に行い、statusを確定させる
+        // 2. エラーチェックを行い、statusを確定させる
         if (tokenData.error) {
             if (tokenData.error === 'Resource does not exist' || tokenData.error === 'NotFound') {
+                // 存在しない、または未共有
                 status = STATUS_NOT_FOUND;
             } else if (tokenData.error === 'Invalid project ID') {
+                // 無効なID
                 status = STATUS_INVALID_PROJECT; 
             }
-            // throwせずに、確定したstatusとnullデータを返却
             return { status: status, data: null }; 
         }
         
-        // 3. Proxyレスポンスから作者名があれば即時リターン
+        // 3. Proxyレスポンスから作者名があれば成功として即時リターン
         if (tokenData.author && tokenData.author.username) {
             authorUsername = tokenData.author.username;
             projectIdInJson = tokenData.id || projectIdInJson;
@@ -238,15 +245,13 @@ async function getProjectMetaData(projectId) {
         
         logToScreen('2b. Author not found in Proxy Metadata. Proceeding to Full JSON check.');
         
-        // 4. Proxyに作者名がなかった場合、フルJSONをダウンロード
+        // 4. Proxyに作者名がなかった場合、フルJSONをダウンロード (Agent情報取得のため)
         let token = tokenData["project_token"];
-        projectJsonText = await $.ajax({
+        const projectJsonText = await $.ajax({
             url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
             dataType: "text",
         });
-
-        logJson('Project Full JSON Text (Raw)', projectJsonText.substring(0, 500) + '...'); // JSONログ追加（長すぎるため一部のみ）
-
+        
         // 5. JSON.parse() を試みる (フルJSONからの抽出)
         try {
             const projectJson = JSON.parse(projectJsonText);
@@ -305,7 +310,7 @@ async function getProjectMetaData(projectId) {
     }
     
     // 7. 上記の全てで作者名抽出に失敗した場合の最終フォールバック (SCRATCH_API_PROJECT_BASE)
-    if (!authorUsername) {
+    if (status === STATUS_ERROR) {
         logToScreen('2g. Falling back to Scratch Meta Data API for author name.');
         try {
             const metaData = await $.ajax({
@@ -325,6 +330,7 @@ async function getProjectMetaData(projectId) {
                 status = STATUS_NOT_FOUND; 
             }
         } catch(e) {
+            // エラーレスポンスが返ってきてもSTATUS_ERRORとする
             logToScreen(`2g. Scratch Meta Data API fallback failed. Error: ${e.message}`, true);
             status = STATUS_ERROR;
         }
@@ -450,7 +456,7 @@ async function AB_Flow(ユザネ) {
             "message": "'projectId' do not exist."
         });
     } else if (userResult.status === STATUS_NOT_FOUND) {
-        // {"error":"Resource does not exist"}と返ってきた
+        // {"error":"Resource does not exist"}と返ってきた (未登録)
         return displayResult({
             "code":"ResourceNotFound", 
             "username": ユザネ, 
@@ -486,16 +492,16 @@ async function BA_Flow(プロ番) {
         // データを受け取れた -> BA1へ
         await BA1_Flow(projectResult.data.author, projectResult.data.id, プロ番);
     } else if (projectResult.status === STATUS_NOT_FOUND || projectResult.status === STATUS_ERROR) {
-        // {"error":"Resource does not exist"}と返ってきた または APIエラー
+        // {"error":"Resource does not exist"}と返ってきた または APIエラー (未共有)
         return displayResult({
             "code":"ResourceNotFound",
-            "message":"'username' do not exist and 'projectId' is not shared."
+            "message":"'username' do not exist and 'projectId' is not shared." // not shared に統一
         });
     } else if (projectResult.status === STATUS_INVALID_PROJECT) {
-        // {"error":"Invalid project ID"}と返ってきた
+        // {"error":"Invalid project ID"}と返ってきた (無効)
         return displayResult({
             "code":"Invalid project ID", 
-            "message":"'username' do not exist and 'projectId' is invalid."
+            "message":"'username' do not exist and 'projectId' is invalid." // invalid に統一
         });
     }
 }
@@ -582,10 +588,10 @@ async function AA_Flow(ユザネ, プロ番) {
         // データを受け取れた -> AA1Aへ
         await AA1A_Flow(ユザネ, userData, userState, agentData, projectData);
     } else if (projectResult.status === STATUS_NOT_FOUND) {
-        // {"error":"Resource does not exist"}と返ってきた -> AA1Bへ
+        // {"error":"Resource does not exist"}と返ってきた -> AA1Bへ (未共有)
         await AA1B_Flow(ユザネ, userState, userData, agentData);
     } else if (projectResult.status === STATUS_INVALID_PROJECT || projectResult.status === STATUS_ERROR) {
-        // {"error":"Invalid project ID"}と返ってきた OR API通信エラー-> AA1Cへ
+        // {"error":"Invalid project ID"}と返ってきた OR API通信エラー-> AA1Cへ (無効)
         await AA1C_Flow(ユザネ, userState, userData, agentData);
     }
 }
@@ -651,9 +657,9 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
     }
 }
 
-// --- フローAA1B ---
+// --- フローAA1B (Project Not Found / Not Shared) ---
 async function AA1B_Flow(ユザネ, userState, userData, agentData) {
-    // プロジェクトIDが見つからない/APIエラーのルート ('projectId' is not shared.)
+    // プロジェクトIDが見つからない/未共有のルート
     
     if (userState === STATUS_SUCCESS) {
         // ユザネから正しく受け取れた
@@ -696,7 +702,7 @@ async function AA1B_Flow(ユザネ, userState, userData, agentData) {
     }
 }
 
-// --- フローAA1C ---
+// --- フローAA1C (Project Invalid / Error) ---
 async function AA1C_Flow(ユザネ, userState, userData, agentData) {
     // プロジェクトIDが無効 (Invalid project ID) のルート
     
