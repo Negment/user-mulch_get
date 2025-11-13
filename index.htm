@@ -60,7 +60,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.1"; // 臨時バージョン番号を追加
+const VERSION = "5.0.2"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const $output = $('#result-output');
@@ -193,7 +193,7 @@ function getProjectMetaData(projectId) {
             dataType: "text",
         });
     })
-    // 3. 取得したテキストから作者名などのメタデータを抽出 (★修正)
+    // 3. 取得したテキストから作者名などのメタデータを抽出 (★再修正)
     .then(function (projectJsonText) {
         // authorオブジェクト全体を正規表現で抽出
         const authorObjectRegex = /"author"\s*:\s*(\{.+?\})/s;
@@ -206,19 +206,19 @@ function getProjectMetaData(projectId) {
 
         let authorUsername = null;
         if (authorMatch && authorMatch[1]) {
-            try {
-                // authorオブジェクトをJSONパースし、usernameを安全に取得
-                const authorData = JSON.parse(authorMatch[1]);
-                authorUsername = authorData.username;
-            } catch (e) {
-                logToScreen('2a. Failed to parse author JSON. Extracting user manually.', true);
-                // パース失敗時フォールバック: usernameを直接抽出
-                const fallbackUsernameRegex = /"username"\s*:\s*"(.+?)"/s;
-                const fallbackMatch = authorMatch[1].match(fallbackUsernameRegex);
-                if (fallbackMatch && fallbackMatch[1]) {
-                     authorUsername = fallbackMatch[1];
-                }
+            const authorObjectContent = authorMatch[1];
+            // authorオブジェクト内から username の値だけを抽出
+            // JSON.parse()を使わず、正規表現で確実に取得する
+            const usernameRegex = /"username"\s*:\s*"(.+?)"/s;
+            const usernameMatch = authorObjectContent.match(usernameRegex);
+            
+            if (usernameMatch && usernameMatch[1]) {
+                authorUsername = usernameMatch[1];
+            } else {
+                logToScreen('2b. Failed to extract username from author object.', true);
             }
+        } else {
+            logToScreen('2b. Failed to extract author object.', true);
         }
         
         // データの組み立て
@@ -405,6 +405,22 @@ async function BA_Flow(プロ番) {
 // --- フローBA1 ---
 async function BA1_Flow(authorUsername, projectId, プロ番) {
     const agentData = await analyzeProjectAgent(プロ番);
+    
+    // authorUsernameがnullの場合は、ユーザーデータ取得をスキップし、作者名をnullのまま処理
+    if (!authorUsername) {
+         logToScreen('1. Fetching User Data for: null (Skipping real fetch due to null author)', true);
+         return displayResult({
+            "username": null, 
+            "id": "ResourceNotFound",
+            "joined": "ResourceNotFound",
+            "country": "ResourceNotFound",
+            "images": "ResourceNotFound",
+            "device": agentData.device,
+            "browser": agentData.browser,
+            "message": "'username' is not registered." // Scratchの"Null"アカウントとは区別
+        });
+    }
+
     const userResult = await getUserData(authorUsername); // プロジェクトidで回収したユザネ
 
     if (userResult.status === STATUS_SUCCESS) {
