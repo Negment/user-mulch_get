@@ -83,62 +83,95 @@ function getQueryParameters() {
 }
 
 /**
+ * JSオブジェクトをScratch風のJSON文字列に変換する
+ */
+function jsonToScratchString(obj) {
+    let parts = [];
+    for (const key in obj) {
+        // 値が文字列の場合はエスケープとクォート処理を行う
+        const value = typeof obj[key] === 'string' 
+            ? `"${obj[key].replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` 
+            : obj[key];
+        
+        // キーをクォートし、キーと値を結合
+        parts.push(`"${key}":${value}`);
+    }
+    return `{${parts.join(',')}}`;
+}
+
+
+/**
  * ユーザー情報とプロジェクト情報を組み合わせて出力するヘルパー関数
  */
-function renderOutput(userData, projectData, agentData) {
-    let outputText = '';
+function renderOutput(userResult, projectResult, agentData, originalUsername, originalProjectId) {
+    let userOutput = {};
+    let projectOutput = {};
+    let finalOutputText = '';
     
-    // ----------------- ユーザー情報 -----------------
-    if (userData && userData.username) {
-        const userName = userData.username || '-';
-        const userId = userData.id || '-';
-        const joinedDate = userData.history.joined ? new Date(userData.history.joined).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-') : '-';
-        const country = userData.profile.country || '-';
-        
-        const rawImageUrl = userData.profile.images['90x90'] || '';
-        const imageUrl = rawImageUrl.split('?')[0]; 
-        
-        outputText += `username: ${userName}<br>`;
-        outputText += `id: ${userId}<br>`;
-        outputText += `joined: ${joinedDate}<br>`;
-        outputText += `country: ${country}<br>`;
-        outputText += `images: ${imageUrl}<br>`; 
-        
-        outputText += `Unread count: -<br>`;
-        
-        const finalDevice = agentData.device || '-';
-        const finalBrowser = agentData.browser || '-';
-        outputText += `device: ${finalDevice}<br>`; 
-        outputText += `browser: ${finalBrowser}<br>`; 
-    } else if (projectData && projectData.author) {
-        // userクエリがなく、プロジェクトの作者名で補完できた場合
-        outputText += `author (from project): ${projectData.author}<br>`;
-        outputText += `device: ${agentData.device || '-'}<br>`; 
-        outputText += `browser: ${agentData.browser || '-'}<br>`; 
-    }
-
-    // ----------------- プロジェクト情報 -----------------
-    if (projectData && projectData.id) {
-        if (outputText.length > 0) {
-            outputText += '<br>--- Project Info ---<br>';
+    // ----------------- 1. ユーザー情報 (JSON形式) -----------------
+    if (originalUsername) { 
+        if (userResult.status === 'NotFound') {
+            userOutput.username = 'NotFound';
+        } else if (userResult.status === 'Invalid') {
+            userOutput.username = '無効'; // 修正1: 無効の印
+        } else if (userResult.status === 'Success') {
+            const userData = userResult.data;
+            userOutput.username = userData.username;
+            userOutput.id = userData.id;
+            // 日付形式をYYYY-MM-DDに変換
+            userOutput.joined = userData.history.joined ? new Date(userData.history.joined).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-') : '-';
+            userOutput.country = userData.profile.country || '-';
+            // URLからクエリパラメータを除去
+            userOutput.images = userData.profile.images['90x90'] ? userData.profile.images['90x90'].split('?')[0] : '-';
+            
+            // デバイス/ブラウザ情報はプロジェクトIDがある場合のみ取得される
+            userOutput.device = agentData.device || '-';
+            userOutput.browser = agentData.browser || '-';
         }
-        outputText += `project_id: ${projectData.id}<br>`;
-        outputText += `title: ${projectData.title || '-'}<br>`;
-        outputText += `visibility: ${projectData.visibility || '-'}<br>`;
-        outputText += `author: ${projectData.author || '-'}<br>`;
+
+        if (Object.keys(userOutput).length > 0) {
+            finalOutputText += jsonToScratchString(userOutput); // 修正5: JSON形式
+        }
     }
     
-    if (outputText.length === 0) {
-        // クエリはあったが、両方のAPIでエラー（NotFound/Invalidなど）の場合
+    // ----------------- 2. プロジェクト情報 (JSON形式) -----------------
+    if (originalProjectId) {
+        if (projectResult.status === 'NotFound') {
+            projectOutput.project_id = 'NotFound'; // 修正3: NotFoundの印
+        } else if (projectResult.status === 'Invalid') {
+            projectOutput.project_id = '無効'; // 修正3: 無効の印
+        } else if (projectResult.status === 'Success') {
+            const projectData = projectResult.data;
+            projectOutput.project_id = projectData.id;
+            projectOutput.title = projectData.title || '-';
+            projectOutput.visibility = projectData.visibility || '-';
+            projectOutput.author = projectData.author || '-';
+
+            // ユザネクエリがない場合、プロジェクト側でデバイス/ブラウザを表示する
+            if (!originalUsername) {
+                 projectOutput.device = agentData.device || '-';
+                 projectOutput.browser = agentData.browser || '-';
+            }
+        }
+
+        if (Object.keys(projectOutput).length > 0) {
+            if (finalOutputText.length > 0) finalOutputText += '<br>';
+            finalOutputText += jsonToScratchString(projectOutput); // 修正5: JSON形式
+        }
+    }
+    
+    // ----------------- 3. 最終出力処理 -----------------
+    if (finalOutputText.length === 0 && (originalUsername || originalProjectId)) {
         $output.text('NotFound'); 
         $output.css('display', 'block');
         logToScreen('[END] Output: NotFound (No data successfully fetched).');
-    } else {
-        // 結果が出た時
-        $output.html(outputText);
+    } else if (finalOutputText.length > 0) {
+        $output.html(finalOutputText);
         $output.css('display', 'block');
         logToScreen('[END] Output successful.');
     }
+    
+    // 修正4: ユザネ側の応答がかき消されないように、独立したJSONとして出力されている
 }
 
 /**
@@ -154,8 +187,10 @@ function analyzeProjectAgent(projectId) {
         dataType: "json",
     })
     .then(function (tokenData) {
+        // プロジェクトトークン取得APIのエラーチェック
         if (tokenData.error) {
             logToScreen('4a. Project Token JSON Error. Skipping Agent Analysis.', true);
+            // エラー時も空のデータを返すことで、メインの処理を止めない
             return $.Deferred().reject('Token JSON Error').promise();
         }
 
@@ -208,21 +243,28 @@ function getProjectMetaData(projectId) {
     .then(function(response) {
         logToScreen('2a. Project Meta Data API success.');
         
-        if (response.error === 'Resource does not exist' || response.error === 'Invalid project ID') {
-             logToScreen('2b. Project JSON Error Detected: Not Found or Invalid.', true);
-             return {};
+        // 修正3: JSONエラーのチェック
+        if (response.error === 'Resource does not exist') {
+             return { status: 'NotFound', source: 'project' };
+        }
+        if (response.error === 'Invalid project ID') {
+             return { status: 'Invalid', source: 'project' };
         }
         
         return {
-            id: response.id,
-            title: response.title,
-            visibility: response.visibility,
-            author: response.author ? response.author.username : null
+            data: {
+                id: response.id,
+                title: response.title,
+                visibility: response.visibility,
+                author: response.author ? response.author.username : null
+            },
+            status: 'Success', 
+            source: 'project' 
         };
     })
     .catch(function(error) {
         logToScreen(`2. Project Meta Data API failed. Status: ${error.status || 'N/A'}, StatusText: ${error.statusText || 'Unknown'}`, true);
-        return {}; 
+        return { status: 'Error', source: 'project' }; 
     });
 }
 
@@ -238,22 +280,26 @@ function getUserData(username) {
     .then(function(userData) {
         logToScreen('1a. User Data API success.');
         
-        if (userData.error === 'Resource does not exist' || userData.error === 'Invalid username') {
-            logToScreen('1b. JSON Error Detected: Invalid username or Not Found.', true);
-            return null;
+        // 修正1: JSONエラーのチェックとステータスの分離
+        if (userData.error === 'Resource does not exist') {
+            return { status: 'NotFound', source: 'user' };
         }
-        return userData;
+        if (userData.error === 'Invalid username') {
+            return { status: 'Invalid', source: 'user' };
+        }
+        
+        return { data: userData, status: 'Success', source: 'user' };
     })
     .catch(function(reason) {
         const status = reason && reason.status ? reason.status : 'N/A';
         
+        // 修正1: HTTPエラーのチェックとステータスの分離
         if (status === 404 || status === 400) {
-            logToScreen(`1c. HTTP Error Detected: ${status} Not Found/Invalid.`, true);
-            return null;
+            return { status: 'NotFound', source: 'user' };
         }
         
         logToScreen(`1d. Unhandled User API Error. Status: ${status}.`, true);
-        return $.Deferred().reject('User API Fatal Error').promise();
+        return { status: 'Error', source: 'user' };
     });
 }
 
@@ -264,38 +310,41 @@ function getUserData(username) {
 function loadAndAnalyzeData(username, projectId) {
     logToScreen(`[START] Analyzing Data (User: ${username || 'N/A'}, Project: ${projectId || 'N/A'})`);
     
+    // ユーザー情報とプロジェクトメタデータのPromiseを作成
     let userPromise = username ? getUserData(username) : $.Deferred().resolve(null).promise();
-    let projectMetaPromise = projectId ? getProjectMetaData(projectId) : $.Deferred().resolve({}).promise();
+    let projectMetaPromise = projectId ? getProjectMetaData(projectId) : $.Deferred().resolve(null).promise();
     let agentPromise = $.Deferred().resolve({ device: '', browser: '' }).promise();
     
     // ユーザー情報とプロジェクトメタデータの取得を待つ
     $.when(userPromise, projectMetaPromise)
-    .then(function(userDataResult, projectMetaData) {
-        let finalUserData = userDataResult;
+    .then(function(userResult, projectResult) {
+        let finalUserResult = userResult;
         
-        // 3. ユザネの補完ロジック
-        if (!username && !finalUserData && projectMetaData && projectMetaData.author) {
-            logToScreen(`3. Project author found. Fetching User Data for: ${projectMetaData.author}`);
-            return $.when(getUserData(projectMetaData.author), projectMetaData);
+        // 3. ユザネの補完ロジック (userクエリがない場合のみ)
+        if (!username && projectResult && projectResult.status === 'Success' && projectResult.data.author) {
+            logToScreen(`3. Project author found. Fetching User Data for: ${projectResult.data.author}`);
+            // プロジェクト作者のユーザー情報を取得する
+            return $.when(getUserData(projectResult.data.author), projectResult);
         }
         
         // エージェント解析のPromiseを設定
-        if (projectId) {
+        if (projectId && projectResult && projectResult.status === 'Success') {
             agentPromise = analyzeProjectAgent(projectId);
         }
 
-        return $.when(finalUserData, projectMetaData, agentPromise);
+        return $.when(finalUserResult, projectResult, agentPromise);
     })
-    .then(function(userData, projectMetaData, agentData) {
-        const finalUserData = (userData && userData.username) ? userData : null;
-        const finalProjectData = projectMetaData;
+    .then(function(userResult, projectResult, agentData) {
+        // ステップ3で再取得した場合、userResultは新しい結果となる
         const finalAgentData = Array.isArray(agentData) ? agentData[0] : agentData; 
         
         logToScreen('[UPDATE] All data collected. Final rendering.');
         
-        renderOutput(finalUserData, finalProjectData, finalAgentData);
+        // 修正4 & 5: 独立したJSONとして結果を出力
+        renderOutput(userResult, projectResult, finalAgentData, username, projectId);
     })
     .catch(function(reason) {
+        // 処理できない致命的なエラー (ネットワークエラーなど) が発生した場合
         logToScreen(`[FATAL] A required API call failed. Reason: ${reason}. Displaying 'error'.`, true);
         $output.text('error');
         $output.css('display', 'block');
