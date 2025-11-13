@@ -60,7 +60,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.2"; // 臨時バージョン番号を更新
+const VERSION = "5.0.3"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const $output = $('#result-output');
@@ -193,31 +193,24 @@ function getProjectMetaData(projectId) {
             dataType: "text",
         });
     })
-    // 3. 取得したテキストから作者名などのメタデータを抽出 (★再修正)
+    // 3. 取得したテキストから作者名などのメタデータを抽出 (★再々修正)
     .then(function (projectJsonText) {
-        // authorオブジェクト全体を正規表現で抽出
-        const authorObjectRegex = /"author"\s*:\s*(\{.+?\})/s;
+        // ファイル全体から "author"オブジェクト内の"username"の値を直接、かつ非欲張りで抽出
+        // { と } を含まず、"username"とその値の後に続く " で終わることを期待する、最も堅牢な抽出
+        const authorUsernameRegex = /"author":\s*\{[^}]*?"username"\s*:\s*"([^"]+)"/s; 
         const idRegex = /"id"\s*:\s*(\d+)/;
         const titleRegex = /"title"\s*:\s*"(.+?)"/s;
-        
-        const authorMatch = projectJsonText.match(authorObjectRegex);
+
+        const authorMatch = projectJsonText.match(authorUsernameRegex);
         const idMatch = projectJsonText.match(idRegex);
         const titleMatch = projectJsonText.match(titleRegex);
 
-        let authorUsername = null;
-        if (authorMatch && authorMatch[1]) {
-            const authorObjectContent = authorMatch[1];
-            // authorオブジェクト内から username の値だけを抽出
-            // JSON.parse()を使わず、正規表現で確実に取得する
-            const usernameRegex = /"username"\s*:\s*"(.+?)"/s;
-            const usernameMatch = authorObjectContent.match(usernameRegex);
-            
-            if (usernameMatch && usernameMatch[1]) {
-                authorUsername = usernameMatch[1];
-            } else {
-                logToScreen('2b. Failed to extract username from author object.', true);
-            }
-        } else {
+        // authorUsername はマッチしたグループ1
+        let authorUsername = authorMatch ? authorMatch[1] : null; 
+
+        if (!authorUsername && authorMatch) {
+             logToScreen('2b. Failed to extract username from matched author object content.', true);
+        } else if (!authorMatch) {
             logToScreen('2b. Failed to extract author object.', true);
         }
         
