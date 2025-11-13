@@ -60,7 +60,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.5"; // 臨時バージョン番号を更新
+const VERSION = "5.0.7"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
@@ -165,10 +165,10 @@ function getUserData(username) {
 }
 
 /**
- * プロジェクトJSONからメタデータを取得する (JSON.parse()を優先し、失敗時に正規表現+APIフォールバック)
+ * プロジェクトJSONからメタデータを取得する (Proxyデータ優先抽出)
  */
 async function getProjectMetaData(projectId) {
-    logToScreen(`2. Fetching Project Meta Data for ID: ${projectId} (via Full JSON Proxy)`);
+    logToScreen(`2. Fetching Project Meta Data for ID: ${projectId} (Proxy/JSON Check)`);
     
     let authorUsername = null;
     let projectIdInJson = null;
@@ -177,7 +177,7 @@ async function getProjectMetaData(projectId) {
     let projectJsonText = null;
 
     try {
-        // 1. プロジェクトのトークンを取得
+        // 1. プロジェクトのトークンとメタデータを Proxy から取得
         const tokenData = await $.ajax({
             url: TURBOWARP_PROJECT_PROXY_BASE + projectId,
             dataType: "json",
@@ -191,15 +191,36 @@ async function getProjectMetaData(projectId) {
             }
             throw new Error("Token API Error or Not Found/Invalid.");
         }
-        let token = tokenData["project_token"];
         
-        // 2. Scratch公式からJSON全体をテキストとして取得
+        // 2. NEW STEP: Proxyレスポンスから作者名があれば即時リターン (ユーザーからの指摘を反映)
+        if (tokenData.author && tokenData.author.username) {
+            authorUsername = tokenData.author.username;
+            projectIdInJson = tokenData.id || projectIdInJson;
+            title = tokenData.title || title;
+            status = STATUS_SUCCESS;
+            logToScreen('2b. Successfully extracted author from Proxy Metadata.');
+            
+            return {
+                data: {
+                    author: authorUsername,
+                    id: projectIdInJson,
+                    title: title,
+                    visibility: tokenData.visibility || 'visible', // Proxyから取れる可視性情報があれば利用
+                },
+                status: status
+            };
+        }
+        
+        logToScreen('2b. Author not found in Proxy Metadata. Proceeding to Full JSON check.');
+        
+        // 3. Proxyに作者名がなかった場合、フルJSONをダウンロード
+        let token = tokenData["project_token"];
         projectJsonText = await $.ajax({
             url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
             dataType: "text",
         });
 
-        // 3a. JSON.parse() を試みる (これが最も確実)
+        // 4. JSON.parse() を試みる (フルJSONからの抽出)
         try {
             const projectJson = JSON.parse(projectJsonText);
             if (projectJson && projectJson.author && projectJson.author.username) {
@@ -207,14 +228,16 @@ async function getProjectMetaData(projectId) {
                 projectIdInJson = projectJson.id || projectIdInJson;
                 title = projectJson.title || title;
                 status = STATUS_SUCCESS;
-                logToScreen('2b. Successfully extracted author via JSON.parse().');
+                logToScreen('2c. Successfully extracted author via Full JSON.parse().');
             } else {
-                 logToScreen('2b. JSON.parse() succeeded but author field was missing/null. Trying regex fallback.', true);
-                 // JSON.parse()は成功したが作者情報が欠落していた場合は正規表現を試す
+                 // author情報がなかった場合、エラーをスローしてcatchに移行し、正規表現ロジックへ強制移行
+                logToScreen('2c. Full JSON parse succeeded but author field was missing/null. Forcing regex fallback.', true);
+                throw new Error("Author field missing after JSON parse.");
             }
         } catch(parseError) {
-             logToScreen('2b. JSON.parse() failed. Trying regex fallback.', true);
-             // 3b. JSON.parse() が失敗した場合のみ、正規表現による抽出を試みる
+             // 5. JSON.parse() が失敗したか、authorフィールドがなかった場合、正規表現による抽出を試みる
+             logToScreen('2d. JSON parse failed or author missing. Trying regex fallback.', true);
+
             const authorUsernameRegex = /"author":\s*\{[^}]*?"username"\s*:\s*"([^"]+)"/s; 
             const idRegex = /"id"\s*:\s*(\d+)/;
             const titleRegex = /"title"\s*:\s*"(.+?)"/s;
@@ -228,16 +251,15 @@ async function getProjectMetaData(projectId) {
             title = titleMatch ? titleMatch[1] : null;
 
             if (authorUsername) {
-                logToScreen('2c. Successfully extracted author via regex fallback.');
+                logToScreen('2e. Successfully extracted author via regex fallback.');
                 status = STATUS_SUCCESS;
             } else {
-                logToScreen('2c. Regex fallback also failed.', true);
+                logToScreen('2e. Regex fallback also failed.', true);
             }
         }
-
+        
         if (authorUsername) {
-            status = STATUS_SUCCESS;
-            // 成功した場合はここでリターン
+            // フルJSONルートで成功した場合のリターン
             return {
                 data: {
                     author: authorUsername,
@@ -245,10 +267,10 @@ async function getProjectMetaData(projectId) {
                     title: title,
                     visibility: 'visible',
                 },
-                status: status
+                status: STATUS_SUCCESS // 成功状態を確定
             };
         }
-        
+
     } catch(e) {
         if (status === STATUS_NOT_FOUND) {
             return { status: STATUS_NOT_FOUND, data: null };
@@ -256,32 +278,34 @@ async function getProjectMetaData(projectId) {
         if (status === STATUS_INVALID_PROJECT) {
             return { status: STATUS_INVALID_PROJECT, data: null };
         }
-        logToScreen(`2d. Full JSON retrieval/parsing failed. Trying meta-data API fallback. Error: ${e.message}`, true);
+        logToScreen(`2f. Full JSON retrieval/parsing failed. Trying meta-data API fallback. Error: ${e.message}`, true);
         status = STATUS_ERROR;
     }
     
-    // 4. 上記の全て（JSON.parse()、正規表現）で作者名抽出に失敗した場合の最終フォールバック
-    logToScreen('2e. Falling back to Scratch Meta Data API for author name.');
-    try {
-        const metaData = await $.ajax({
-            url: SCRATCH_API_PROJECT_BASE + projectId,
-            dataType: "json",
-        });
+    // 6. 上記の全てで作者名抽出に失敗した場合の最終フォールバック
+    if (!authorUsername) {
+        logToScreen('2g. Falling back to Scratch Meta Data API for author name.');
+        try {
+            const metaData = await $.ajax({
+                url: SCRATCH_API_PROJECT_BASE + projectId,
+                dataType: "json",
+            });
 
-        if (metaData && metaData.author && metaData.author.username) {
-            authorUsername = metaData.author.username;
-            projectIdInJson = metaData.id || projectIdInJson;
-            title = metaData.title || title;
-            status = STATUS_SUCCESS;
-        } else {
-            status = STATUS_NOT_FOUND; // メタデータAPIでも見つからなかった場合
+            if (metaData && metaData.author && metaData.author.username) {
+                authorUsername = metaData.author.username;
+                projectIdInJson = metaData.id || projectIdInJson;
+                title = metaData.title || title;
+                status = STATUS_SUCCESS;
+            } else {
+                status = STATUS_NOT_FOUND; // メタデータAPIでも見つからなかった場合
+            }
+        } catch(e) {
+            logToScreen(`2g. Scratch Meta Data API fallback failed. Error: ${e.message}`, true);
+            status = STATUS_ERROR;
         }
-    } catch(e) {
-        logToScreen(`2e. Scratch Meta Data API fallback failed. Error: ${e.message}`, true);
-        status = STATUS_ERROR;
     }
 
-    // データの組み立て
+    // データの組み立て（最終的に取得できた情報を使用）
     return {
         data: {
             author: authorUsername,
@@ -532,7 +556,7 @@ async function AA_Flow(ユザネ, プロ番) {
 async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData) {
     // プロジェクト作者の完全なユーザー情報を取得
     let projectAuthorData = {};
-    // projectData.authorがnullの場合にgetUserDataを呼ばないようガード
+    // projectData.authorがnullの場合は、getUserDataを呼ばないようガード
     if (projectData.author) {
         const authorResult = await getUserData(projectData.author);
         projectAuthorData = authorResult.data || {};
