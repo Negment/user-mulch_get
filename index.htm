@@ -60,6 +60,7 @@
   <script>
 "use strict";
 
+const VERSION = "5.0.1"; // 臨時バージョン番号を追加
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const $output = $('#result-output');
@@ -176,7 +177,6 @@ function getProjectMetaData(projectId) {
     // 2. トークンを使ってプロジェクトのJSON全体を取得
     .then(function (tokenData) {
         if (tokenData.error) {
-            // トークン取得に失敗 = プロジェクトが存在しないか無効
             if (tokenData.error === 'Resource does not exist' || tokenData.error === 'NotFound') {
                 return $.Deferred().reject(STATUS_NOT_FOUND).promise();
             }
@@ -193,26 +193,39 @@ function getProjectMetaData(projectId) {
             dataType: "text",
         });
     })
-    // 3. 取得したテキストから作者名などのメタデータを抽出
+    // 3. 取得したテキストから作者名などのメタデータを抽出 (★修正)
     .then(function (projectJsonText) {
-        // author内のusernameを直接正規表現で抽出
-        const authorUsernameRegex = /"author"\s*:\s*\{[^}]*?"username"\s*:\s*"(.+?)"/s;
+        // authorオブジェクト全体を正規表現で抽出
+        const authorObjectRegex = /"author"\s*:\s*(\{.+?\})/s;
         const idRegex = /"id"\s*:\s*(\d+)/;
         const titleRegex = /"title"\s*:\s*"(.+?)"/s;
         
-        const authorMatch = projectJsonText.match(authorUsernameRegex);
+        const authorMatch = projectJsonText.match(authorObjectRegex);
         const idMatch = projectJsonText.match(idRegex);
         const titleMatch = projectJsonText.match(titleRegex);
 
-        // 正規表現にマッチしたグループ1（ユザネ文字列）を取得
-        let authorUsername = authorMatch ? authorMatch[1] : null; 
-        let projectIdInJson = idMatch ? idMatch[1] : null;
+        let authorUsername = null;
+        if (authorMatch && authorMatch[1]) {
+            try {
+                // authorオブジェクトをJSONパースし、usernameを安全に取得
+                const authorData = JSON.parse(authorMatch[1]);
+                authorUsername = authorData.username;
+            } catch (e) {
+                logToScreen('2a. Failed to parse author JSON. Extracting user manually.', true);
+                // パース失敗時フォールバック: usernameを直接抽出
+                const fallbackUsernameRegex = /"username"\s*:\s*"(.+?)"/s;
+                const fallbackMatch = authorMatch[1].match(fallbackUsernameRegex);
+                if (fallbackMatch && fallbackMatch[1]) {
+                     authorUsername = fallbackMatch[1];
+                }
+            }
+        }
         
         // データの組み立て
         return {
             data: {
                 author: authorUsername,
-                id: projectIdInJson,
+                id: idMatch ? idMatch[1] : null,
                 title: titleMatch ? titleMatch[1] : null,
                 visibility: 'visible',
             },
@@ -294,7 +307,7 @@ async function mainFlow() {
     const ユザネ = params.username;
     const プロ番 = params.projectId;
 
-    logToScreen(`[FLOW] Start processing (User: ${ユザネ || 'N/A'}, Project: ${プロ番 || 'N/A'})`);
+    logToScreen(`[FLOW] Start processing (Version: ${VERSION}, User: ${ユザネ || 'N/A'}, Project: ${プロ番 || 'N/A'})`);
 
     // B. ユザネを受け取れたか
     if (!ユザネ) {
@@ -441,7 +454,7 @@ async function AA_Flow(ユザネ, プロ番) {
     if (projectResult.status === STATUS_SUCCESS) {
         // データを受け取れた -> AA1Aへ
         await AA1A_Flow(ユザネ, userData, userState, agentData, projectData);
-    } else if (projectResult.status === STATUS_NOT_FOUND || projectResult.status === STATUS_ERROR) { // ★修正: APIエラーは非共有（AA1B）として処理
+    } else if (projectResult.status === STATUS_NOT_FOUND || projectResult.status === STATUS_ERROR) {
         // {"error":"Resource does not exist"}と返ってきた OR APIエラー -> AA1Bへ
         await AA1B_Flow(ユザネ, userState, userData, agentData);
     } else if (projectResult.status === STATUS_INVALID_PROJECT) {
@@ -526,18 +539,21 @@ async function AA1B_Flow(ユザネ, userState, userData, agentData) {
             "browser": "ResourceNotFound",
             "message": "'projectId' is not shared."
         });
-    } else if (userState === STATUS_NOT_REGISTERED || userState === STATUS_ACCOUNT_INVALID) { // ★修正: Invalidもユザネで埋める
+    } else if (userState === STATUS_NOT_REGISTERED || userState === STATUS_ACCOUNT_INVALID) {
         // アカウントがなかった/無効という記録があった
+        const code = userState === STATUS_NOT_REGISTERED ? "ResourceNotFound" : "Invalid username";
+        const message = userState === STATUS_NOT_REGISTERED ? "'username' is not registered and 'projectId' is not shared." : "'username' is invalid.";
+
         return displayResult({
-            "code": userState === STATUS_NOT_REGISTERED ? "ResourceNotFound" : "Invalid username",
-            "username": ユザネ, // ★修正: クエリで入力されたユザネを返す
+            "code": code,
+            "username": ユザネ,
             "id": "ResourceNotFound",
             "joined": "ResourceNotFound",
             "country": "ResourceNotFound",
             "images": "ResourceNotFound",
             "device": "ResourceNotFound",
             "browser": "ResourceNotFound",
-            "message": userState === STATUS_NOT_REGISTERED ? "'username' is not registered and 'projectId' is not shared." : "'username' is invalid."
+            "message": message
         });
     }
 }
@@ -556,18 +572,21 @@ async function AA1C_Flow(ユザネ, userState, userData, agentData) {
             "browser": "ResourceNotFound",
             "message": "'projectId' is invalid."
         });
-    } else if (userState === STATUS_NOT_REGISTERED || userState === STATUS_ACCOUNT_INVALID) { // ★修正: Invalidもユザネで埋める
+    } else if (userState === STATUS_NOT_REGISTERED || userState === STATUS_ACCOUNT_INVALID) {
         // アカウントがなかった/無効という記録があった
+        const code = userState === STATUS_NOT_REGISTERED ? "ResourceNotFound" : "Invalid username";
+        const message = userState === STATUS_NOT_REGISTERED ? "'username' is not registered and 'projectId' is invalid." : "'username' is invalid.";
+
          return displayResult({
-            "code": userState === STATUS_NOT_REGISTERED ? "ResourceNotFound" : "Invalid username",
-            "username": ユザネ, // ★修正: クエリで入力されたユザネを返す
+            "code": code,
+            "username": ユザネ,
             "id": "ResourceNotFound",
             "joined": "ResourceNotFound",
             "country": "ResourceNotFound",
             "images": "ResourceNotFound",
             "device": "ResourceNotFound",
             "browser": "ResourceNotFound",
-            "message": userState === STATUS_NOT_REGISTERED ? "'username' is not registered and 'projectId' is invalid." : "'username' is invalid."
+            "message": message
         });
     }
 }
