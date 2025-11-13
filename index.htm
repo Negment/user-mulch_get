@@ -60,9 +60,10 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.3"; // 臨時バージョン番号を更新
+const VERSION = "5.0.5"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
+const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
 const $output = $('#result-output');
 const $debugLog = $('#debug-log');
 
@@ -164,77 +165,132 @@ function getUserData(username) {
 }
 
 /**
- * プロジェクトJSONからメタデータを取得する (プロジェクトJSONを解析する方式)
+ * プロジェクトJSONからメタデータを取得する (JSON.parse()を優先し、失敗時に正規表現+APIフォールバック)
  */
-function getProjectMetaData(projectId) {
+async function getProjectMetaData(projectId) {
     logToScreen(`2. Fetching Project Meta Data for ID: ${projectId} (via Full JSON Proxy)`);
     
-    // 1. プロジェクトのトークンを取得
-    return $.ajax({
-        url: TURBOWARP_PROJECT_PROXY_BASE + projectId,
-        dataType: "json",
-    })
-    // 2. トークンを使ってプロジェクトのJSON全体を取得
-    .then(function (tokenData) {
+    let authorUsername = null;
+    let projectIdInJson = null;
+    let title = null;
+    let status = STATUS_ERROR;
+    let projectJsonText = null;
+
+    try {
+        // 1. プロジェクトのトークンを取得
+        const tokenData = await $.ajax({
+            url: TURBOWARP_PROJECT_PROXY_BASE + projectId,
+            dataType: "json",
+        });
+
         if (tokenData.error) {
             if (tokenData.error === 'Resource does not exist' || tokenData.error === 'NotFound') {
-                return $.Deferred().reject(STATUS_NOT_FOUND).promise();
+                status = STATUS_NOT_FOUND;
+            } else if (tokenData.error === 'Invalid project ID') {
+                status = STATUS_INVALID_PROJECT;
             }
-            if (tokenData.error === 'Invalid project ID') {
-                return $.Deferred().reject(STATUS_INVALID_PROJECT).promise();
-            }
-            return $.Deferred().reject(STATUS_ERROR).promise();
+            throw new Error("Token API Error or Not Found/Invalid.");
         }
         let token = tokenData["project_token"];
         
-        // Scratch公式からJSON全体を取得
-        return $.ajax({
+        // 2. Scratch公式からJSON全体をテキストとして取得
+        projectJsonText = await $.ajax({
             url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
             dataType: "text",
         });
-    })
-    // 3. 取得したテキストから作者名などのメタデータを抽出 (★再々修正)
-    .then(function (projectJsonText) {
-        // ファイル全体から "author"オブジェクト内の"username"の値を直接、かつ非欲張りで抽出
-        // { と } を含まず、"username"とその値の後に続く " で終わることを期待する、最も堅牢な抽出
-        const authorUsernameRegex = /"author":\s*\{[^}]*?"username"\s*:\s*"([^"]+)"/s; 
-        const idRegex = /"id"\s*:\s*(\d+)/;
-        const titleRegex = /"title"\s*:\s*"(.+?)"/s;
 
-        const authorMatch = projectJsonText.match(authorUsernameRegex);
-        const idMatch = projectJsonText.match(idRegex);
-        const titleMatch = projectJsonText.match(titleRegex);
+        // 3a. JSON.parse() を試みる (これが最も確実)
+        try {
+            const projectJson = JSON.parse(projectJsonText);
+            if (projectJson && projectJson.author && projectJson.author.username) {
+                authorUsername = projectJson.author.username;
+                projectIdInJson = projectJson.id || projectIdInJson;
+                title = projectJson.title || title;
+                status = STATUS_SUCCESS;
+                logToScreen('2b. Successfully extracted author via JSON.parse().');
+            } else {
+                 logToScreen('2b. JSON.parse() succeeded but author field was missing/null. Trying regex fallback.', true);
+                 // JSON.parse()は成功したが作者情報が欠落していた場合は正規表現を試す
+            }
+        } catch(parseError) {
+             logToScreen('2b. JSON.parse() failed. Trying regex fallback.', true);
+             // 3b. JSON.parse() が失敗した場合のみ、正規表現による抽出を試みる
+            const authorUsernameRegex = /"author":\s*\{[^}]*?"username"\s*:\s*"([^"]+)"/s; 
+            const idRegex = /"id"\s*:\s*(\d+)/;
+            const titleRegex = /"title"\s*:\s*"(.+?)"/s;
 
-        // authorUsername はマッチしたグループ1
-        let authorUsername = authorMatch ? authorMatch[1] : null; 
+            const authorMatch = projectJsonText.match(authorUsernameRegex);
+            const idMatch = projectJsonText.match(idRegex);
+            const titleMatch = projectJsonText.match(titleRegex);
 
-        if (!authorUsername && authorMatch) {
-             logToScreen('2b. Failed to extract username from matched author object content.', true);
-        } else if (!authorMatch) {
-            logToScreen('2b. Failed to extract author object.', true);
+            authorUsername = authorMatch ? authorMatch[1] : null; 
+            projectIdInJson = idMatch ? idMatch[1] : null;
+            title = titleMatch ? titleMatch[1] : null;
+
+            if (authorUsername) {
+                logToScreen('2c. Successfully extracted author via regex fallback.');
+                status = STATUS_SUCCESS;
+            } else {
+                logToScreen('2c. Regex fallback also failed.', true);
+            }
+        }
+
+        if (authorUsername) {
+            status = STATUS_SUCCESS;
+            // 成功した場合はここでリターン
+            return {
+                data: {
+                    author: authorUsername,
+                    id: projectIdInJson,
+                    title: title,
+                    visibility: 'visible',
+                },
+                status: status
+            };
         }
         
-        // データの組み立て
-        return {
-            data: {
-                author: authorUsername,
-                id: idMatch ? idMatch[1] : null,
-                title: titleMatch ? titleMatch[1] : null,
-                visibility: 'visible',
-            },
-            status: STATUS_SUCCESS
-        };
-    })
-    .catch(function(reason) {
-        if (reason === STATUS_NOT_FOUND) {
+    } catch(e) {
+        if (status === STATUS_NOT_FOUND) {
             return { status: STATUS_NOT_FOUND, data: null };
         }
-        if (reason === STATUS_INVALID_PROJECT) {
+        if (status === STATUS_INVALID_PROJECT) {
             return { status: STATUS_INVALID_PROJECT, data: null };
         }
-        logToScreen(`2. Project Meta Data API (JSON Parsing) failed for ${projectId}`, true);
-        return { status: STATUS_ERROR, data: null }; 
-    });
+        logToScreen(`2d. Full JSON retrieval/parsing failed. Trying meta-data API fallback. Error: ${e.message}`, true);
+        status = STATUS_ERROR;
+    }
+    
+    // 4. 上記の全て（JSON.parse()、正規表現）で作者名抽出に失敗した場合の最終フォールバック
+    logToScreen('2e. Falling back to Scratch Meta Data API for author name.');
+    try {
+        const metaData = await $.ajax({
+            url: SCRATCH_API_PROJECT_BASE + projectId,
+            dataType: "json",
+        });
+
+        if (metaData && metaData.author && metaData.author.username) {
+            authorUsername = metaData.author.username;
+            projectIdInJson = metaData.id || projectIdInJson;
+            title = metaData.title || title;
+            status = STATUS_SUCCESS;
+        } else {
+            status = STATUS_NOT_FOUND; // メタデータAPIでも見つからなかった場合
+        }
+    } catch(e) {
+        logToScreen(`2e. Scratch Meta Data API fallback failed. Error: ${e.message}`, true);
+        status = STATUS_ERROR;
+    }
+
+    // データの組み立て
+    return {
+        data: {
+            author: authorUsername,
+            id: projectIdInJson,
+            title: title,
+            visibility: 'visible', 
+        },
+        status: status
+    };
 }
 
 /**
