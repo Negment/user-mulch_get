@@ -68,7 +68,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.10"; // 臨時バージョン番号を更新
+const VERSION = "5.0.11"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
@@ -179,10 +179,9 @@ function getUserData(username) {
     })
     .catch(function(reason) {
         // API通信エラーや、jQueryのタイムアウトエラーなど
-        logToScreen(`1. User API failed for ${username}`, true);
-        // 存在しないアカウントの場合もこのcatchに入ることがあるため、便宜上STATUS_NOT_FOUNDにフォールバック
-        // (APIが404を返す場合、jQueryがエラーを投げることが多いため)
-        return { status: STATUS_NOT_FOUND, data: null }; 
+        logToScreen(`1. User API failed for ${username}. Treating as Invalid.`, true);
+        // 無効な文字が原因の可能性が高いため、STATUS_INVALIDにフォールバック
+        return { status: STATUS_INVALID, data: null }; 
     });
 }
 
@@ -301,7 +300,6 @@ async function getProjectMetaData(projectId) {
 
     } catch(e) {
         // ここに来るのは API通信エラーや フルJSONダウンロード失敗時など。
-        // ResourceNotFound / Invalid project ID はすでに上でリターンされているはず。
         logToScreen(`2f. Full JSON retrieval/parsing failed. Trying meta-data API fallback. Error: ${e.message}`, true);
         status = STATUS_ERROR;
     }
@@ -465,7 +463,7 @@ async function AB_Flow(ユザネ) {
             "message":"'username' is not registered and 'projectId' do not exist."
         });
     } else if (userResult.status === STATUS_INVALID) {
-        // {"error":"Invalid username"}と返ってきた
+        // {"error":"Invalid username"}またはAPIエラーとしてInvalidと返ってきた
         return displayResult({
             "code":"Invalid username", 
             "username": ユザネ, 
@@ -548,7 +546,7 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "message": "'username' is not registered."
         });
     } else if (userResult.status === STATUS_INVALID) {
-        // {"error":"Invalid username"}と返ってきた (プロジェクト作者が無効な名前である稀なケース)
+        // {"error":"Invalid username"}またはAPIエラーとしてInvalidと返ってきた
          return displayResult({
             "username": authorUsername, 
             "id": "ResourceNotFound",
@@ -571,9 +569,7 @@ async function AA_Flow(ユザネ, プロ番) {
     if (userResult.status === STATUS_NOT_FOUND) {
         userState = STATUS_NOT_REGISTERED; // アカウントがなかった
     } else if (userResult.status === STATUS_INVALID) {
-        userState = STATUS_ACCOUNT_INVALID; // アカウントが無効だった
-    } else if (userResult.status === STATUS_ERROR) {
-        // API通信エラーは、入力されたユザネが無効/不在の場合に起きるため、ここでは Invalid として処理を継続
+        // Invalid username または API通信エラー（無効な文字）の場合
         userState = STATUS_ACCOUNT_INVALID; 
     }
     
