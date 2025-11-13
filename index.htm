@@ -9,9 +9,9 @@
     body {
       margin: 0;
       font-family: "Helvetica Neue", "Helvetica", Arial, sans-serif;
-      color: #000; /* 全体を黒文字に */
+      color: #000;
       line-height: 1.5em;
-      font-size: 16px; /* 文字を小さく */
+      font-size: 16px;
       background-color: white; 
     }
 
@@ -22,7 +22,7 @@
     }
 
     #result-output {
-      white-space: pre-wrap; /* <br>を有効にし、改行を維持 */
+      white-space: pre-wrap;
       padding: 0;
       border: none;
       background-color: transparent;
@@ -120,7 +120,6 @@ function loadAndAnalyzeUser(username) {
     })
     .then(function(response) {
         // --- ユーザー存在チェック (NotFound) ---
-        // TurboWarpプロキシが返す無効ユーザー名エラーをチェック
         if (response.error === 'Invalid username') {
             $output.text('NotFound');
             return $.Deferred().reject('HANDLED');
@@ -150,15 +149,14 @@ function loadAndAnalyzeUser(username) {
                 dataType: 'json' 
             })
             .then(function(projectsData) {
-                // プロジェクトデータが空の配列 [] の場合も考慮
                 if (Array.isArray(projectsData) && projectsData.length > 0) {
                     const latestProjectId = projectsData[0].id;
                     return analyzeProjectAgent(latestProjectId); // 4. デバイス/ブラウザ解析へ
                 }
-                return { device: '', browser: '' }; // プロジェクトなし
+                return { device: '', browser: '' };
             })
             .catch(function() {
-                return { device: '', browser: '' }; // 失敗しても空の情報を返す
+                return { device: '', browser: '' };
             })
         );
     })
