@@ -68,7 +68,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.12"; // 臨時バージョン番号を更新
+const VERSION = "5.0.14"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
@@ -150,7 +150,7 @@ function displayResult(result) {
 }
 
 /**
- * ユーザーAPIからデータを取得する (5.0.12: 404エラーハンドリング修正)
+ * ユーザーAPIからデータを取得する
  */
 function getUserData(username) {
     logToScreen(`1. Fetching User Data for: ${username}`);
@@ -193,7 +193,7 @@ function getUserData(username) {
 }
 
 /**
- * プロジェクトAPIからメタデータを取得する
+ * プロジェクトAPIからメタデータを取得する (5.0.14: Proxyのネットワークエラーハンドリング強化)
  */
 async function getProjectMetaData(projectId) {
     logToScreen(`2. Fetching Project Meta Data for ID: ${projectId} (Proxy/JSON Check)`);
@@ -202,27 +202,46 @@ async function getProjectMetaData(projectId) {
     let projectIdInJson = null;
     let title = null;
     let status = STATUS_ERROR; // 初期値はエラー
+    let tokenData = null;
 
     try {
         // 1. プロジェクトのトークンとメタデータを Proxy から取得
-        const tokenData = await $.ajax({
+        const tokenPromise = $.ajax({
             url: TURBOWARP_PROJECT_PROXY_BASE + projectId,
             dataType: "json",
+        }).then(data => data)
+        .catch(jqXHR => {
+            // ネットワークエラーが発生した場合
+            if (jqXHR.status === 404) {
+                // 404の場合は「Resource does not exist」を模倣（未共有として扱う）
+                logToScreen(`2a. Proxy network failed (404 Not Found). Mimicking Not Shared error.`, true);
+                return { error: 'Resource does not exist' }; 
+            }
+            // その他のネットワークエラー（500など）
+            logToScreen(`2a. Proxy network failed (Status: ${jqXHR.status}). Forcing fallback.`, true);
+            return { error: 'Proxy Network Error - Forcing Fallback' };
         });
+
+        tokenData = await tokenPromise;
         
         logJson('Project Proxy Response (Token Data)', tokenData); // JSONログ追加
 
-        // 2. エラーチェックを行い、statusを確定させる
+        // 2. エラーチェックを行い、statusを確定させる (JSONエラーと模倣エラーの両方を捕捉)
         if (tokenData.error) {
             if (tokenData.error === 'Resource does not exist' || tokenData.error === 'NotFound') {
                 // 存在しない、または未共有
-                status = STATUS_NOT_FOUND;
+                status = STATUS_NOT_FOUND; 
             } else if (tokenData.error === 'Invalid project ID') {
                 // 無効なID
                 status = STATUS_INVALID_PROJECT; 
+            } else {
+                 // 捕捉できなかったネットワークエラー
+                 status = STATUS_ERROR;
             }
             return { status: status, data: null }; 
         }
+        
+        // --- ここから成功ルート ---
         
         // 3. Proxyレスポンスから作者名があれば成功として即時リターン
         if (tokenData.author && tokenData.author.username) {
@@ -304,8 +323,8 @@ async function getProjectMetaData(projectId) {
         }
 
     } catch(e) {
-        // ここに来るのは API通信エラーや フルJSONダウンロード失敗時など。
-        logToScreen(`2f. Full JSON retrieval/parsing failed. Trying meta-data API fallback. Error: ${e.message}`, true);
+        // ここに来るのは フルJSONダウンロード失敗時、またはステップ1でCritical Errorが再スローされた時など
+        logToScreen(`2f. Full JSON retrieval/parsing failed or critical error occurred. Trying meta-data API fallback. Error: ${e.message}`, true);
         status = STATUS_ERROR;
     }
     
@@ -329,10 +348,15 @@ async function getProjectMetaData(projectId) {
                 // ここでも見つからない場合
                 status = STATUS_NOT_FOUND; 
             }
-        } catch(e) {
-            // エラーレスポンスが返ってきてもSTATUS_ERRORとする
-            logToScreen(`2g. Scratch Meta Data API fallback failed. Error: ${e.message}`, true);
-            status = STATUS_ERROR;
+        } catch(jqXHR) {
+            // HTTP ステータスコードをチェック
+            if (jqXHR.status === 404) {
+                 logToScreen(`2g. Scratch Meta Data API fallback failed (404 Not Found).`, true);
+                 status = STATUS_NOT_FOUND; // 404は未共有として扱う
+            } else {
+                 logToScreen(`2g. Scratch Meta Data API fallback failed (Other Error: ${jqXHR.status}).`, true);
+                 status = STATUS_ERROR; // その他はエラーとして扱う
+            }
         }
     }
 
@@ -396,6 +420,7 @@ function analyzeProjectAgent(projectId) {
         return { device: deviceOutput, browser: browserOutput };
     })
     .catch(function(error) {
+        // Agent Analysisが失敗した場合はResourceNotFoundを返す
         logToScreen(`3. Project Agent Analysis failed.`, true);
         return { device: 'ResourceNotFound', browser: 'ResourceNotFound' };
     });
@@ -492,7 +517,7 @@ async function BA_Flow(プロ番) {
         // データを受け取れた -> BA1へ
         await BA1_Flow(projectResult.data.author, projectResult.data.id, プロ番);
     } else if (projectResult.status === STATUS_NOT_FOUND || projectResult.status === STATUS_ERROR) {
-        // {"error":"Resource does not exist"}と返ってきた または APIエラー (未共有)
+        // STATUS_NOT_FOUND (未共有) / STATUS_ERROR (その他の通信エラー)
         return displayResult({
             "code":"ResourceNotFound",
             "message":"'username' do not exist and 'projectId' is not shared." // not shared に統一
