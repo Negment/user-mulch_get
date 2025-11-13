@@ -76,7 +76,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.16"; // 最終バージョン番号
+const VERSION = "5.0.18"; // 最終版のバージョン番号
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
@@ -425,26 +425,55 @@ function analyzeProjectAgent(projectId) {
             dataType: "text",
         });
     })
-    // 3. エージェント文字列を抽出・解析
+    // 3. エージェント文字列を抽出・解析 (識別子直接抽出ロジック)
     .then(function (projectJson) {
         const agentRegex = /"agent"\s*:\s*"(.+?)"/s;
         const match = projectJson.match(agentRegex);
         
         if (match && match[1]) {
             const userAgent = match[1];
-             if (/Windows NT 10.0/.test(userAgent)) { deviceOutput = 'Windows 10/11'; } 
-            else if (/iPhone/.test(userAgent)) { deviceOutput = 'iPhone (iOS)'; } 
-            else if (/iPad/.test(userAgent)) { deviceOutput = 'iPad (iPadOS)'; } 
-            else if (/Mac OS X/.test(userAgent) && !/iPhone|iPad/.test(userAgent)) { deviceOutput = 'Mac (macOS)'; } 
-            else if (/Android/.test(userAgent)) { deviceOutput = 'Android'; } 
-            else if (/Linux/.test(userAgent)) { deviceOutput = 'Linux'; }
             
-            if (/CriOS\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Chrome for iOS (CriOS)'; } 
-            else if (/Edg\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Edge'; } 
-            else if (/Chrome\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Chrome'; } 
-            else if (/Safari\/(\d+\.\d+)/.test(userAgent) && !/Chrome|CriOS/.test(userAgent)) { browserOutput = 'Safari'; } 
-            else if (/Firefox\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Firefox'; }
+            // 1. デバイス/OS情報（括弧内の情報全体）の抽出
+            // ほとんどのUAは 'Mozilla/5.0 (デバイス情報)' の形式なので、括弧内の情報を取得
+            let osPart = userAgent.match(/\((.*?)\)/);
+            if (osPart && osPart[1]) {
+                 // 括弧内の文字列をそのまま、または整形して使用
+                // セミコロンとスペースをカンマとスペースに置き換え、見やすくする
+                deviceOutput = osPart[1].trim().replace(/; /g, ', '); 
+            }
+            
+            // 2. ブラウザ情報（主要なブラウザ/バージョン）の抽出
+            // Chrome, CriOS, Firefox, Edge, Safari のパターンとバージョンを抽出
+            let browserPart = userAgent.match(/(Chrome|CriOS|Firefox|Edg|Safari)\/(\d+(\.\d+){1,3})/g);
+
+            if (browserPart && browserPart.length > 0) {
+                // 配列をカンマ区切りで結合して表示
+                browserOutput = browserPart.join(', '); 
+            } else if (userAgent.includes("Trident")) {
+                // IE (Trident) のためのフォールバック
+                browserOutput = "Internet Explorer"; 
+            } else {
+                 // どちらにもヒットしなかった場合は、ブラウザ情報なしとする
+                 browserOutput = 'Unknown Browser';
+            }
+            
+            // 抽出できなかった場合の最終フォールバック（deviceOutput）
+            if (deviceOutput === 'ResourceNotFound' && osPart) {
+                // 括弧内情報がある場合は、それを設定
+                deviceOutput = osPart[1].trim();
+            } else if (deviceOutput === 'ResourceNotFound') {
+                 // 括弧内情報がなければそのまま
+                 deviceOutput = 'Unknown Device';
+            }
+            
         }
+        
+        // UA文字列自体がなければResourceNotFoundを維持
+        if (!match || !match[1]) {
+             deviceOutput = 'ResourceNotFound';
+             browserOutput = 'ResourceNotFound';
+        }
+        
         return { device: deviceOutput, browser: browserOutput };
     })
     .catch(function(error) {
