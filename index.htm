@@ -60,7 +60,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.8"; // 臨時バージョン番号を更新
+const VERSION = "5.0.9"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
@@ -556,11 +556,11 @@ async function AA_Flow(ユザネ, プロ番) {
     if (projectResult.status === STATUS_SUCCESS) {
         // データを受け取れた -> AA1Aへ
         await AA1A_Flow(ユザネ, userData, userState, agentData, projectData);
-    } else if (projectResult.status === STATUS_NOT_FOUND || projectResult.status === STATUS_ERROR) {
-        // {"error":"Resource does not exist"}と返ってきた OR APIエラー -> AA1Bへ
+    } else if (projectResult.status === STATUS_NOT_FOUND) {
+        // {"error":"Resource does not exist"}と返ってきた -> AA1Bへ
         await AA1B_Flow(ユザネ, userState, userData, agentData);
-    } else if (projectResult.status === STATUS_INVALID_PROJECT) {
-        // {"error":"Invalid project ID"}と返ってきた -> AA1Cへ
+    } else if (projectResult.status === STATUS_INVALID_PROJECT || projectResult.status === STATUS_ERROR) {
+        // {"error":"Invalid project ID"}と返ってきた OR API通信エラー-> AA1Cへ
         await AA1C_Flow(ユザネ, userState, userData, agentData);
     }
 }
