@@ -83,12 +83,12 @@ function logToScreen(message, isError = false) {
 }
 
 /**
- * URLクエリパラメータから username と projectId を取得する (クエリ名の修正)
+ * URLクエリパラメータから username と projectId を取得する
  */
 function getQueryParameters() {
     const urlParams = new URLSearchParams(window.location.search);
     return {
-        username: urlParams.get('username') ? urlParams.get('username').trim() : null, // user -> username
+        username: urlParams.get('username') ? urlParams.get('username').trim() : null,
         projectId: urlParams.get('projectId') ? urlParams.get('projectId').trim() : null
     };
 }
@@ -110,7 +110,7 @@ function jsonToScratchString(obj) {
 }
 
 /**
- * 結果を出力エリアに表示する (エラーハンドリング追加)
+ * 結果を出力エリアに表示する
  */
 function displayResult(result) {
     logToScreen('[DEBUG] Attempting to display result.'); 
@@ -163,35 +163,79 @@ function getUserData(username) {
 }
 
 /**
- * プロジェクトAPIからメタデータを取得する
+ * プロジェクトJSONからメタデータを取得する (プロジェクトJSONを解析する方式)
  */
 function getProjectMetaData(projectId) {
-    logToScreen(`2. Fetching Project Meta Data for ID: ${projectId}`);
+    logToScreen(`2. Fetching Project Meta Data for ID: ${projectId} (via Full JSON Proxy)`);
+    
+    // 1. プロジェクトのトークンを取得
     return $.ajax({
-        url: `https://api.scratch.mit.edu/projects/${projectId}`, 
-        dataType: 'json',
+        url: TURBOWARP_PROJECT_PROXY_BASE + projectId,
+        dataType: "json",
     })
-    .then(function(response) {
-        if (response.error === 'Resource does not exist') {
-             return { status: STATUS_NOT_FOUND, data: null };
+    // 2. トークンを使ってプロジェクトのJSON全体を取得
+    .then(function (tokenData) {
+        if (tokenData.error) {
+            // トークン取得に失敗 = プロジェクトが存在しないか無効
+            if (tokenData.error === 'Resource does not exist' || tokenData.error === 'NotFound') {
+                return $.Deferred().reject(STATUS_NOT_FOUND).promise();
+            }
+            if (tokenData.error === 'Invalid project ID') {
+                return $.Deferred().reject(STATUS_INVALID_PROJECT).promise();
+            }
+            return $.Deferred().reject(STATUS_ERROR).promise();
         }
-        if (response.error === 'Invalid project ID') {
-             return { status: STATUS_INVALID_PROJECT, data: null };
+        let token = tokenData["project_token"];
+        
+        // Scratch公式からJSON全体を取得
+        return $.ajax({
+            url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
+            dataType: "text",
+        });
+    })
+    // 3. 取得したテキストから作者名などのメタデータを抽出
+    .then(function (projectJsonText) {
+        // authorオブジェクト、id、titleを正規表現を使って抽出
+        const authorRegex = /"author"\s*:\s*(\{.+?\})/s;
+        const idRegex = /"id"\s*:\s*(\d+)/;
+        const titleRegex = /"title"\s*:\s*"(.+?)"/s;
+        
+        const authorMatch = projectJsonText.match(authorRegex);
+        const idMatch = projectJsonText.match(idRegex);
+        const titleMatch = projectJsonText.match(titleRegex);
+
+        let authorUsername = null;
+        let projectIdInJson = idMatch ? idMatch[1] : null;
+
+        if (authorMatch && authorMatch[1]) {
+            try {
+                // authorオブジェクトをパース
+                const authorData = JSON.parse(authorMatch[1]);
+                authorUsername = authorData.username;
+            } catch (e) {
+                logToScreen('2a. Failed to parse author JSON.', true);
+            }
         }
         
+        // データの組み立て
         return {
             data: {
-                author: response.author ? response.author.username : null,
-                id: response.id,
-                title: response.title,
-                visibility: response.visibility,
-                // 他の必要なメタデータ
+                author: authorUsername,
+                id: projectIdInJson,
+                title: titleMatch ? titleMatch[1] : null,
+                visibility: 'visible',
             },
             status: STATUS_SUCCESS
         };
     })
-    .catch(function(error) {
-        logToScreen(`2. Project Meta Data API failed for ${projectId}`, true);
+    .catch(function(reason) {
+        if (reason === STATUS_NOT_FOUND) {
+            return { status: STATUS_NOT_FOUND, data: null };
+        }
+        if (reason === STATUS_INVALID_PROJECT) {
+            return { status: STATUS_INVALID_PROJECT, data: null };
+        }
+        logToScreen(`2. Project Meta Data API (JSON Parsing) failed for ${projectId}`, true);
         return { status: STATUS_ERROR, data: null }; 
     });
 }
@@ -204,13 +248,16 @@ function analyzeProjectAgent(projectId) {
     let deviceOutput = 'ResourceNotFound';
     let browserOutput = 'ResourceNotFound';
     
+    // 1. トークンを取得
     return $.ajax({
         url: TURBOWARP_PROJECT_PROXY_BASE + projectId,
         dataType: "json",
     })
+    // 2. トークンを使ってプロジェクトのJSON全体を取得
     .then(function (tokenData) {
         if (tokenData.error) {
             logToScreen('3a. Project Token JSON Error. Skipping Agent Analysis.', true);
+            // エージェント解析はエラーでも処理を続行し、ResourceNotFoundを返す
             return $.Deferred().reject('Token JSON Error').promise();
         }
         let token = tokenData["project_token"];
@@ -219,6 +266,7 @@ function analyzeProjectAgent(projectId) {
             dataType: "text",
         });
     })
+    // 3. エージェント文字列を抽出・解析
     .then(function (projectJson) {
         const agentRegex = /"agent"\s*:\s*"(.+?)"/s;
         const match = projectJson.match(agentRegex);
@@ -300,7 +348,7 @@ async function AB_Flow(ユザネ) {
             "browser": "ResourceNotFound",
             "message": "'projectId' do not exist."
         });
-    } else if (userResult.status === STATUS_NOT_FOUND) {
+    } else if (userResult.status === STATUS_NOT_FOUND || userResult.status === STATUS_ERROR) {
         // {"error":"Resource does not exist"}と返ってきた
         return displayResult({
             "code":"ResourceNotFound", 
@@ -322,8 +370,8 @@ async function BA_Flow(プロ番) {
     if (projectResult.status === STATUS_SUCCESS) {
         // データを受け取れた -> BA1へ
         await BA1_Flow(projectResult.data.author, projectResult.data.id, プロ番);
-    } else if (projectResult.status === STATUS_NOT_FOUND) {
-        // {"error":"Resource does not exist"}と返ってきた
+    } else if (projectResult.status === STATUS_NOT_FOUND || projectResult.status === STATUS_ERROR) {
+        // {"error":"Resource does not exist"}と返ってきた または APIエラー
         return displayResult({
             "code":"ResourceNotFound",
             "message":"'username' do not exist and 'projectId' is not shared."
@@ -354,9 +402,8 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "browser": agentData.browser,
             "message": "'username' do not exist."
         });
-    } else if (userResult.status === STATUS_NOT_FOUND || userResult.status === STATUS_INVALID) {
-        // {"error":"Resource does not exist"}と返ってきた / Invalid usernameもNotFoundとして処理
-        // プロジェクトメタデータにはユーザーIDがないため、AuthorのIDは不明なまま。
+    } else if (userResult.status === STATUS_NOT_FOUND || userResult.status === STATUS_INVALID || userResult.status === STATUS_ERROR) {
+        // {"error":"Resource does not exist"}と返ってきた / Invalid username/ErrorもNotFoundとして処理
         return displayResult({
             "username": authorUsername,
             "id": "ResourceNotFound",
@@ -368,7 +415,6 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "message": "'username' is not registered."
         });
     } 
-    // その他のエラー (STATUS_ERROR) はここでは考慮しない
 }
 
 // --- フローAA ---
@@ -377,13 +423,10 @@ async function AA_Flow(ユザネ, プロ番) {
     let userState = STATUS_SUCCESS; // ユザネからの初期データ取得状態
     let userData = userResult.data || {};
 
-    if (userResult.status === STATUS_NOT_FOUND) {
-        userState = STATUS_NOT_REGISTERED; // アカウントがなかった
+    if (userResult.status === STATUS_NOT_FOUND || userResult.status === STATUS_ERROR) {
+        userState = STATUS_NOT_REGISTERED; // アカウントがなかった/エラー
     } else if (userResult.status === STATUS_INVALID) {
         userState = STATUS_ACCOUNT_INVALID; // アカウントが無効だった
-    } else if (userResult.status === STATUS_ERROR) {
-        // ユーザーAPI通信エラーの場合、処理継続は困難だが、ここではフローに従いNotFoundに近い扱いとする
-        userState = STATUS_NOT_REGISTERED; 
     }
     
     // AA1へ: この時にJSON回収、読み取り (device, browserを記録)
@@ -397,16 +440,17 @@ async function AA_Flow(ユザネ, プロ番) {
     } else if (projectResult.status === STATUS_NOT_FOUND) {
         // {"error":"Resource does not exist"}と返ってきた -> AA1Bへ
         await AA1B_Flow(ユザネ, userState, userData, agentData);
-    } else if (projectResult.status === STATUS_INVALID_PROJECT) {
-        // {"error":"Invalid project ID"}と返ってきた -> AA1Cへ
+    } else if (projectResult.status === STATUS_INVALID_PROJECT || projectResult.status === STATUS_ERROR) {
+        // {"error":"Invalid project ID"}と返ってきた、またはAPIエラー -> AA1Cへ
         await AA1C_Flow(ユザネ, userState, userData, agentData);
     }
 }
 
 // --- フローAA1A ---
 async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData) {
-    // ユーザーAPIのID取得が必要なため、プロジェクトIDのauthorを使って再取得
+    // プロジェクト作者の完全なユーザー情報を取得
     let projectAuthorData = {};
+    // projectData.authorがnullの場合にgetUserDataを呼ばないようガード
     if (projectData.author) {
         const authorResult = await getUserData(projectData.author);
         projectAuthorData = authorResult.data || {};
@@ -442,8 +486,8 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
         return displayResult({
             "username": projectData.author,
             "id": projectAuthorData.id || "ResourceNotFound",
-            "joined": "ResourceNotFound",
-            "country": "ResourceNotFound",
+            "joined": projectAuthorData.joined || "ResourceNotFound",
+            "country": projectAuthorData.country || "ResourceNotFound",
             "images": projectAuthorData.images || "ResourceNotFound",
             "device": agentData.device,
             "browser": agentData.browser,
@@ -454,8 +498,8 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
         return displayResult({
             "username": projectData.author,
             "id": projectAuthorData.id || "ResourceNotFound",
-            "joined": "ResourceNotFound",
-            "country": "ResourceNotFound",
+            "joined": projectAuthorData.joined || "ResourceNotFound",
+            "country": projectAuthorData.country || "ResourceNotFound",
             "images": projectAuthorData.images || "ResourceNotFound",
             "device": agentData.device,
             "browser": agentData.browser,
