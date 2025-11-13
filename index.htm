@@ -29,7 +29,6 @@
       color: #000;
     }
     
-    /* プロフィール画像は非表示 */
     #profile-image {
       display: none;
     }
@@ -45,202 +44,156 @@
   <script>
 "use strict";
 
-const API_BASE = 'https://api.scratch.mit.edu/users/';
+// TurboWarpのユーザー情報プロキシベースURLを使用
+const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
+const $output = $('#result-output');
 
 /**
  * URLクエリから 'user' パラメータの値 (ユーザー名) を取得する関数
- * @returns {string | null} ユーザー名、または見つからなかった場合は null
  */
 function getUsernameFromUrl() {
   const urlParams = new URLSearchParams(window.location.search);
-  
-  // ?user=<ユーザー名> から取得し、トリミング
   const username = urlParams.get('user');
-  
-  if (username) {
-    return username.trim();
-  }
-  
-  return null;
+  return username ? username.trim() : null;
 }
 
 /**
- * 最新プロジェクトのJSONからUser-Agentを分析する非同期関数 (Callback使用)
- * @param {string} projectId - プロジェクトID
- * @param {function(string, string)} callback - 実行後に呼び出すコールバック関数 (device, browser)
+ * プロジェクトIDからデバイス/ブラウザ情報を取得するPromise関数
  */
-function analyzeProjectAgent(projectId, callback) {
+function analyzeProjectAgent(projectId) {
     let deviceOutput = '';
     let browserOutput = '';
-
-    // 1. トークン取得 (TurboWarp Proxy)
-    $.ajax({
+    
+    // 既存のTurboWarpプロキシ（プロジェクトトークン取得）はそのまま利用
+    return $.ajax({
         url: `https://trampoline.turbowarp.org/proxy/projects/${projectId}`,
         dataType: "json",
-        success: function (tokenData) {
-            let token = tokenData["project_token"];
+    })
+    .then(function (tokenData) {
+        let token = tokenData["project_token"];
+        // 実際のプロジェクトJSON取得
+        return $.ajax({
+            url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
+            dataType: "text",
+        });
+    })
+    .then(function (projectJson) {
+        const agentRegex = /"agent"\s*:\s*"(.+?)"/s;
+        const match = projectJson.match(agentRegex);
+        
+        if (match && match[1]) {
+            const userAgent = match[1];
             
-            // 2. プロジェクトJSON取得 (Agent情報)
-            $.ajax({
-                url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
-                data: "",
-                dataType: "text",
-                success: function (projectJson) {
-                    const agentRegex = /"agent"\s*:\s*"(.+?)"/s;
-                    const match = projectJson.match(agentRegex);
-                    
-                    if (match && match[1]) {
-                        const userAgent = match[1];
-                        
-                        // OS/Browser analysis logic
-                        if (/Windows NT 10.0/.test(userAgent)) {
-                            deviceOutput = 'Windows 10/11';
-                        } else if (/iPhone/.test(userAgent)) {
-                            deviceOutput = 'iPhone (iOS)';
-                        } else if (/iPad/.test(userAgent)) {
-                            deviceOutput = 'iPad (iPadOS)';
-                        } else if (/Mac OS X/.test(userAgent) && !/iPhone|iPad/.test(userAgent)) {
-                            deviceOutput = 'Mac (macOS)';
-                        } else if (/Android/.test(userAgent)) {
-                            deviceOutput = 'Android';
-                        } else if (/Linux/.test(userAgent)) {
-                            deviceOutput = 'Linux';
-                        }
-                        
-                        if (/CriOS\/(\d+\.\d+)/.test(userAgent)) {
-                            browserOutput = 'Chrome for iOS (CriOS)';
-                        } else if (/Edg\/(\d+\.\d+)/.test(userAgent)) {
-                            browserOutput = 'Edge';
-                        } else if (/Chrome\/(\d+\.\d+)/.test(userAgent)) {
-                            browserOutput = 'Chrome';
-                        } else if (/Safari\/(\d+\.\d+)/.test(userAgent) && !/Chrome|CriOS/.test(userAgent)) {
-                            browserOutput = 'Safari';
-                        } else if (/Firefox\/(\d+\.\d+)/.test(userAgent)) {
-                            browserOutput = 'Firefox';
-                        }
-                    }
-                    callback(deviceOutput, browserOutput);
-                },
-                error: function() {
-                    // JSON取得失敗は空白で処理
-                    callback(deviceOutput, browserOutput);
-                }
-            });
-        },
-        error: function() {
-            // トークン取得失敗は空白で処理
-            callback(deviceOutput, browserOutput);
+            // OSの判定
+            if (/Windows NT 10.0/.test(userAgent)) { deviceOutput = 'Windows 10/11'; } 
+            else if (/iPhone/.test(userAgent)) { deviceOutput = 'iPhone (iOS)'; } 
+            else if (/iPad/.test(userAgent)) { deviceOutput = 'iPad (iPadOS)'; } 
+            else if (/Mac OS X/.test(userAgent) && !/iPhone|iPad/.test(userAgent)) { deviceOutput = 'Mac (macOS)'; } 
+            else if (/Android/.test(userAgent)) { deviceOutput = 'Android'; } 
+            else if (/Linux/.test(userAgent)) { deviceOutput = 'Linux'; }
+            
+            // ブラウザの判定
+            if (/CriOS\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Chrome for iOS (CriOS)'; } 
+            else if (/Edg\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Edge'; } 
+            else if (/Chrome\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Chrome'; } 
+            else if (/Safari\/(\d+\.\d+)/.test(userAgent) && !/Chrome|CriOS/.test(userAgent)) { browserOutput = 'Safari'; } 
+            else if (/Firefox\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Firefox'; }
         }
+        return { device: deviceOutput, browser: browserOutput };
+    })
+    .catch(function() {
+        return { device: '', browser: '' };
     });
 }
 
-
 /**
- * ユーザー情報、未読数、デバイス情報を連続して取得し、結果を出力するメイン関数
- * @param {string} username - Scratchのユーザー名
+ * メインのデータ取得ロジック
  */
 function loadAndAnalyzeUser(username) {
-    const $output = $('#result-output');
-    
-    // --- 1. ユーザー情報 API (1st API) ---
+    let userData = null;
+    let messageCount = '取得失敗';
+
+    // 1. ユーザー情報 API (TurboWarpプロキシ経由)
     $.ajax({
-        url: API_BASE + username,
+        url: TURBOWARP_USER_PROXY_BASE + username,
         dataType: 'json',
-        success: function(userData) {
-            
-            // --- 無効な入力チェック (Not entered!) ---
-            if (userData.code === 'ResourceNotFound') {
-                // 無入力または空文字列をAPIが受け取った場合
-                $output.text('Not entered!');
-                return;
-            }
-            
-            // --- ユーザー存在チェック (NotFound) ---
-            if (userData.code === 'NotFound') {
-                $output.text('NotFound');
-                return;
-            }
-            
-            // 正常なユーザーデータの抽出
-            const userName = userData.username || 'N/A';
-            const userId = userData.id || 'N/A';
-            const joinedDate = userData.history.joined ? new Date(userData.history.joined).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-') : 'N/A';
-            const country = userData.profile.country || 'N/A';
-            const imageUrl = userData.profile.images['90x90'] || ''; // 画像URLは表示しないが保持
-
-            let messageCount = '取得中...';
-            let latestProjectId = null;
-            let deviceOutput = '';
-            let browserOutput = '';
-
-            // --- 2. メッセージ数 API (2nd API) ---
-            $.ajax({
-                url: API_BASE + username + '/messages/count',
-                dataType: 'json',
-                success: function(countData) {
-                    messageCount = countData.count !== undefined ? countData.count : 'N/A';
-                },
-                error: function() {
-                    messageCount = '取得失敗';
-                },
-                complete: function() {
-                    
-                    // --- 3. プロジェクト API (3rd API) ---
-                    $.ajax({
-                        url: API_BASE + username + '/projects/?limit=1&offset=0',
-                        dataType: 'json',
-                        success: function(projectsData) {
-                            if (Array.isArray(projectsData) && projectsData.length > 0) {
-                                latestProjectId = projectsData[0].id;
-                                
-                                // --- 4. デバイス/ブラウザ解析 ---
-                                analyzeProjectAgent(latestProjectId, function(device, browser) {
-                                    deviceOutput = device;
-                                    browserOutput = browser;
-                                    
-                                    // 最終出力
-                                    generateOutput();
-                                });
-                                
-                            } else {
-                                // 作品がない場合 (デバイス/ブラウザは空欄のまま)
-                                generateOutput();
-                            }
-                        },
-                        error: function() {
-                            // プロジェクトリスト取得失敗 (デバイス/ブラウザは空欄のまま)
-                            generateOutput();
-                        }
-                    });
-                }
-            });
-            
-            // --- 最終結果の結合と出力関数 ---
-            function generateOutput() {
-                let outputText = '';
-
-                // ユーザー情報
-                outputText += `username: ${userName}<br>`;
-                outputText += `id: ${userId}<br>`;
-                outputText += `joined: ${joinedDate}<br>`;
-                outputText += `country: ${country}<br>`;
-                outputText += `images: ${imageUrl}<br>`;
-                outputText += `Unread count: ${messageCount}`;
+    })
+    .then(function(response) {
+        // --- ユーザー存在チェック (NotFound) ---
+        // TurboWarpプロキシが返す無効ユーザー名エラーをチェック
+        if (response.error === 'Invalid username') {
+            $output.text('NotFound');
+            return $.Deferred().reject('HANDLED');
+        }
+        
+        userData = response;
+        
+        // 2. メッセージ数 API と 3. プロジェクト API を並行実行 ($.when)
+        return $.when(
+            // 2. メッセージ数 (TurboWarpプロキシ経由)
+            $.ajax({ 
+                url: TURBOWARP_USER_PROXY_BASE + username + '/messages/count', 
+                dataType: 'json' 
+            })
+            .then(function(countData) {
+                messageCount = countData.count !== undefined ? countData.count : 'N/A';
+                return null;
+            })
+            .catch(function() {
+                messageCount = '取得失敗';
+                return null;
+            }),
                 
-                // デバイス/ブラウザ情報がある場合のみ追記
-                if (deviceOutput) {
-                    outputText += `<br>device: ${deviceOutput}`;
+            // 3. プロジェクトリスト (TurboWarpプロキシ経由)
+            $.ajax({ 
+                url: TURBOWARP_USER_PROXY_BASE + username + '/projects/?limit=1&offset=0', 
+                dataType: 'json' 
+            })
+            .then(function(projectsData) {
+                // プロジェクトデータが空の配列 [] の場合も考慮
+                if (Array.isArray(projectsData) && projectsData.length > 0) {
+                    const latestProjectId = projectsData[0].id;
+                    return analyzeProjectAgent(latestProjectId); // 4. デバイス/ブラウザ解析へ
                 }
-                if (browserOutput) {
-                    outputText += `<br>browser: ${browserOutput}`;
-                }
+                return { device: '', browser: '' }; // プロジェクトなし
+            })
+            .catch(function() {
+                return { device: '', browser: '' }; // 失敗しても空の情報を返す
+            })
+        );
+    })
+    .then(function(results) {
+        const agentData = results[1];
 
-                $output.html(outputText);
-            }
+        // データの整形
+        const userName = userData.username || 'N/A';
+        const userId = userData.id || 'N/A';
+        const joinedDate = userData.history.joined ? new Date(userData.history.joined).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-') : 'N/A';
+        const country = userData.profile.country || 'N/A';
+        const imageUrl = userData.profile.images['90x90'] || '';
+        
+        // 最終出力
+        let outputText = '';
+        outputText += `username: ${userName}<br>`;
+        outputText += `id: ${userId}<br>`;
+        outputText += `joined: ${joinedDate}<br>`;
+        outputText += `country: ${country}<br>`;
+        outputText += `images: ${imageUrl}<br>`;
+        outputText += `Unread count: ${messageCount}`;
+        
+        // デバイス/ブラウザ情報がある場合のみ追記
+        if (agentData.device) {
+            outputText += `<br>device: ${agentData.device}`;
+        }
+        if (agentData.browser) {
+            outputText += `<br>browser: ${agentData.browser}`;
+        }
 
-        },
-        error: function(xhr, status, error) {
-            // ユーザー情報API自体がネットワークレベルで失敗した場合
+        $output.html(outputText);
+    })
+    .catch(function(reason) {
+        // HANDLED (NotFound) 以外は 'error'
+        if (reason !== 'HANDLED') {
             $output.text('error');
         }
     });
@@ -249,17 +202,15 @@ function loadAndAnalyzeUser(username) {
 
 // 3. ページロード時に処理を開始
 $(document).ready(function() {
-  // ページタイトルをURL名（ホスト名）に設定
   document.title = window.location.hostname;
   
   const username = getUsernameFromUrl();
   
+  // --- 空白入力の事前ブロック ---
   if (username && username.length > 0) {
-    // ユーザー名があれば自動でロード・分析を開始
     loadAndAnalyzeUser(username);
   } else {
-    // ユーザー名がない、または空文字列の場合
-    $('#result-output').html('Not entered!');
+    $output.text('Not entered!');
   }
 });
   </script>
