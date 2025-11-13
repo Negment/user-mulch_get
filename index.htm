@@ -55,6 +55,14 @@
     }
     
     #profile-image { display: none; }
+    
+    /* 非デバッグモード時のスタイル */
+    .no-debug-view #container {
+        padding: 0; /* 余計なパディングを削除 */
+    }
+    .no-debug-view #debug-log {
+        display: none !important;
+    }
   </style>
 
   <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
@@ -68,12 +76,13 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.15"; // 臨時バージョン番号を更新
+const VERSION = "5.0.16"; // 最終バージョン番号
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
 const $output = $('#result-output');
 const $debugLog = $('#debug-log');
+let DEBUG_MODE = false; // デバッグモードフラグ
 
 // --- 定数/ステータス ---
 const STATUS_SUCCESS = 'Success';
@@ -88,11 +97,13 @@ const STATUS_ACCOUNT_INVALID = 'Account invalid'; // 内部でのみ使用
 // --- ヘルパー関数 ---
 
 function logToScreen(message, isError = false) {
+    if (!DEBUG_MODE) return;
     const className = isError ? 'error-log' : '';
     $debugLog.append(`<span class="${className}">[${new Date().toLocaleTimeString()}] ${message}</span><br>`);
 }
 
 function logJson(label, data) {
+    if (!DEBUG_MODE) return;
     let jsonString = '';
     try {
         jsonString = JSON.stringify(data, null, 2);
@@ -103,10 +114,21 @@ function logJson(label, data) {
 }
 
 /**
- * URLクエリパラメータから username と projectId を取得する
+ * URLクエリパラメータから username, projectId, debug を取得し、DEBUG_MODEを設定する
  */
 function getQueryParameters() {
     const urlParams = new URLSearchParams(window.location.search);
+    
+    // DEBUG_MODE の設定
+    const debugParam = urlParams.get('debug');
+    if (debugParam === 'true' || debugParam === '') {
+        DEBUG_MODE = true;
+    } else {
+        DEBUG_MODE = false;
+        // デバッグモードでなければ、CSSクラスを追加して非表示にする
+        $('body').addClass('no-debug-view');
+    }
+    
     return {
         username: urlParams.get('username') ? urlParams.get('username').trim() : null,
         projectId: urlParams.get('projectId') ? urlParams.get('projectId').trim() : null
@@ -147,6 +169,11 @@ function displayResult(result) {
     }
     $output.css('display', 'block');
     logToScreen('[END] Output successful.');
+    
+    // デバッグモードでない場合、ログエリアを完全に非表示にする
+    if (!DEBUG_MODE) {
+        $('#debug-log').remove();
+    }
 }
 
 /**
@@ -159,7 +186,7 @@ function getUserData(username) {
         dataType: 'json',
     })
     .then(function(userData) {
-        logJson('User Proxy Response', userData); // JSONログ追加
+        logJson('User Proxy Response', userData); 
         // 存在しないユーザー名がJSONレスポンスで返ってきた場合
         if (userData.error === 'Resource does not exist' || userData.error === 'NotFound') {
             return { status: STATUS_NOT_FOUND, data: null };
@@ -219,13 +246,13 @@ async function getProjectMetaData(projectId) {
             }
             // その他のネットワークエラー（400, 500など）
             logToScreen(`2a. Proxy network failed (Status: ${jqXHR.status}). Forcing fallback.`, true);
-            // 400エラーなどはInvalid IDの可能性が高いため、STATUS_ERRORに流すために模倣せずに進める
+            // 400エラーなどはInvalid IDの可能性が高いため、STATUS_ERRORに流す
             return { error: 'Proxy Network Error - Forcing Fallback' };
         });
 
         tokenData = await tokenPromise;
         
-        logJson('Project Proxy Response (Token Data)', tokenData); // JSONログ追加
+        logJson('Project Proxy Response (Token Data)', tokenData); 
 
         // 2. エラーチェックを行い、statusを確定させる (JSONエラーと模倣エラーの両方を捕捉)
         if (tokenData.error) {
@@ -338,7 +365,7 @@ async function getProjectMetaData(projectId) {
                 dataType: "json",
             });
             
-            logJson('Scratch Meta Data API Response (Fallback)', metaData); // JSONログ追加
+            logJson('Scratch Meta Data API Response (Fallback)', metaData); 
 
             if (metaData && metaData.author && metaData.author.username) {
                 authorUsername = metaData.author.username;
@@ -517,14 +544,14 @@ async function BA_Flow(プロ番) {
     if (projectResult.status === STATUS_SUCCESS) {
         // データを受け取れた -> BA1へ
         await BA1_Flow(projectResult.data.author, projectResult.data.id, プロ番);
-    } else if (projectResult.status === STATUS_NOT_FOUND) { // 修正点: STATUS_ERRORを分離
+    } else if (projectResult.status === STATUS_NOT_FOUND) { 
         // STATUS_NOT_FOUND (未共有)
         return displayResult({
             "code":"ResourceNotFound",
             "message":"'username' do not exist and 'projectId' is not shared."
         });
-    } else if (projectResult.status === STATUS_INVALID_PROJECT || projectResult.status === STATUS_ERROR) { // 修正点: STATUS_ERRORを追加
-        // {"error":"Invalid project ID"}と返ってきた (無効) OR API通信エラー
+    } else if (projectResult.status === STATUS_INVALID_PROJECT || projectResult.status === STATUS_ERROR) { 
+        // 無効なID（JSONエラー） OR その他の通信エラー（400エラーなど）
         return displayResult({
             "code":"Invalid project ID", 
             "message":"'username' do not exist and 'projectId' is invalid." // invalid に統一
