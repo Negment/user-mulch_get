@@ -60,7 +60,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.7"; // 臨時バージョン番号を更新
+const VERSION = "5.0.8"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
@@ -159,6 +159,7 @@ function getUserData(username) {
         };
     })
     .catch(function(reason) {
+        // API通信エラーや、jQueryのタイムアウトエラーなど
         logToScreen(`1. User API failed for ${username}`, true);
         return { status: STATUS_ERROR, data: null };
     });
@@ -183,16 +184,18 @@ async function getProjectMetaData(projectId) {
             dataType: "json",
         });
 
+        // 2. エラーチェックを tokenData 取得直後に行い、statusを確定させる
         if (tokenData.error) {
             if (tokenData.error === 'Resource does not exist' || tokenData.error === 'NotFound') {
                 status = STATUS_NOT_FOUND;
             } else if (tokenData.error === 'Invalid project ID') {
-                status = STATUS_INVALID_PROJECT;
+                status = STATUS_INVALID_PROJECT; 
             }
-            throw new Error("Token API Error or Not Found/Invalid.");
+            // throwせずに、確定したstatusとnullデータを返却
+            return { status: status, data: null }; 
         }
         
-        // 2. NEW STEP: Proxyレスポンスから作者名があれば即時リターン (ユーザーからの指摘を反映)
+        // 3. Proxyレスポンスから作者名があれば即時リターン
         if (tokenData.author && tokenData.author.username) {
             authorUsername = tokenData.author.username;
             projectIdInJson = tokenData.id || projectIdInJson;
@@ -205,7 +208,7 @@ async function getProjectMetaData(projectId) {
                     author: authorUsername,
                     id: projectIdInJson,
                     title: title,
-                    visibility: tokenData.visibility || 'visible', // Proxyから取れる可視性情報があれば利用
+                    visibility: tokenData.visibility || 'visible', 
                 },
                 status: status
             };
@@ -213,14 +216,14 @@ async function getProjectMetaData(projectId) {
         
         logToScreen('2b. Author not found in Proxy Metadata. Proceeding to Full JSON check.');
         
-        // 3. Proxyに作者名がなかった場合、フルJSONをダウンロード
+        // 4. Proxyに作者名がなかった場合、フルJSONをダウンロード
         let token = tokenData["project_token"];
         projectJsonText = await $.ajax({
             url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
             dataType: "text",
         });
 
-        // 4. JSON.parse() を試みる (フルJSONからの抽出)
+        // 5. JSON.parse() を試みる (フルJSONからの抽出)
         try {
             const projectJson = JSON.parse(projectJsonText);
             if (projectJson && projectJson.author && projectJson.author.username) {
@@ -235,7 +238,7 @@ async function getProjectMetaData(projectId) {
                 throw new Error("Author field missing after JSON parse.");
             }
         } catch(parseError) {
-             // 5. JSON.parse() が失敗したか、authorフィールドがなかった場合、正規表現による抽出を試みる
+             // 6. JSON.parse() が失敗したか、authorフィールドがなかった場合、正規表現による抽出を試みる
              logToScreen('2d. JSON parse failed or author missing. Trying regex fallback.', true);
 
             const authorUsernameRegex = /"author":\s*\{[^}]*?"username"\s*:\s*"([^"]+)"/s; 
@@ -272,17 +275,13 @@ async function getProjectMetaData(projectId) {
         }
 
     } catch(e) {
-        if (status === STATUS_NOT_FOUND) {
-            return { status: STATUS_NOT_FOUND, data: null };
-        }
-        if (status === STATUS_INVALID_PROJECT) {
-            return { status: STATUS_INVALID_PROJECT, data: null };
-        }
+        // ここに来るのは API通信エラーや フルJSONダウンロード失敗時など。
+        // ResourceNotFound / Invalid project ID はすでに上でリターンされているはず。
         logToScreen(`2f. Full JSON retrieval/parsing failed. Trying meta-data API fallback. Error: ${e.message}`, true);
         status = STATUS_ERROR;
     }
     
-    // 6. 上記の全てで作者名抽出に失敗した場合の最終フォールバック
+    // 7. 上記の全てで作者名抽出に失敗した場合の最終フォールバック (SCRATCH_API_PROJECT_BASE)
     if (!authorUsername) {
         logToScreen('2g. Falling back to Scratch Meta Data API for author name.');
         try {
@@ -297,7 +296,8 @@ async function getProjectMetaData(projectId) {
                 title = metaData.title || title;
                 status = STATUS_SUCCESS;
             } else {
-                status = STATUS_NOT_FOUND; // メタデータAPIでも見つからなかった場合
+                // ここでも見つからない場合
+                status = STATUS_NOT_FOUND; 
             }
         } catch(e) {
             logToScreen(`2g. Scratch Meta Data API fallback failed. Error: ${e.message}`, true);
@@ -333,7 +333,7 @@ function analyzeProjectAgent(projectId) {
     // 2. トークンを使ってプロジェクトのJSON全体を取得
     .then(function (tokenData) {
         if (tokenData.error) {
-            logToScreen('3a. Project Token JSON Error. Skipping Agent Analysis.', true);
+            logToScreen(`3a. Project Token JSON Error (${tokenData.error}). Skipping Agent Analysis.`, true);
             return $.Deferred().reject('Token JSON Error').promise();
         }
         let token = tokenData["project_token"];
@@ -424,11 +424,11 @@ async function AB_Flow(ユザネ) {
             "browser": "ResourceNotFound",
             "message": "'projectId' do not exist."
         });
-    } else if (userResult.status === STATUS_NOT_FOUND || userResult.status === STATUS_ERROR) {
+    } else if (userResult.status === STATUS_NOT_FOUND) {
         // {"error":"Resource does not exist"}と返ってきた
         return displayResult({
             "code":"ResourceNotFound", 
-            "username": ユザネ, // 未登録の場合、入力されたユザネを返す
+            "username": ユザネ, 
             "id": "ResourceNotFound",
             "joined": "ResourceNotFound",
             "country": "ResourceNotFound",
@@ -437,11 +437,11 @@ async function AB_Flow(ユザネ) {
             "browser": "ResourceNotFound",
             "message":"'username' is not registered and 'projectId' do not exist."
         });
-    } else if (userResult.status === STATUS_INVALID) {
-        // {"error":"Invalid username"}と返ってきた
+    } else if (userResult.status === STATUS_INVALID || userResult.status === STATUS_ERROR) {
+        // {"error":"Invalid username"} / APIエラーと返ってきた
         return displayResult({
             "code":"Invalid username", 
-            "username": ユザネ, // 無効な場合、入力されたユザネを返す
+            "username": ユザネ, 
             "id": "ResourceNotFound",
             "joined": "ResourceNotFound",
             "country": "ResourceNotFound",
@@ -479,7 +479,7 @@ async function BA_Flow(プロ番) {
 async function BA1_Flow(authorUsername, projectId, プロ番) {
     const agentData = await analyzeProjectAgent(プロ番);
     
-    // authorUsernameがnullの場合は、ユーザーデータ取得をスキップし、作者名をnullのまま処理
+    // authorUsernameがnullの場合は、ユーザーデータ取得をスキップ
     if (!authorUsername) {
          logToScreen('1. Fetching User Data for: null (Skipping real fetch due to null author)', true);
          return displayResult({
@@ -490,7 +490,7 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "images": "ResourceNotFound",
             "device": agentData.device,
             "browser": agentData.browser,
-            "message": "'username' is not registered." // Scratchの"Null"アカウントとは区別
+            "message": "'username' is not registered." 
         });
     }
 
@@ -508,10 +508,10 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "browser": agentData.browser,
             "message": "'username' do not exist."
         });
-    } else if (userResult.status === STATUS_NOT_FOUND || userResult.status === STATUS_INVALID || userResult.status === STATUS_ERROR) {
-        // {"error":"Resource does not exist"}と返ってきた / Invalid username/ErrorもNotFoundとして処理
+    } else if (userResult.status === STATUS_NOT_FOUND) {
+        // {"error":"Resource does not exist"}と返ってきた
         return displayResult({
-            "username": authorUsername, // プロジェクト作者名 (unnot-leasなど)
+            "username": authorUsername, 
             "id": "ResourceNotFound",
             "joined": "ResourceNotFound",
             "country": "ResourceNotFound",
@@ -520,7 +520,19 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "browser": agentData.browser,
             "message": "'username' is not registered."
         });
-    } 
+    } else if (userResult.status === STATUS_INVALID || userResult.status === STATUS_ERROR) {
+        // {"error":"Invalid username"} / APIエラーと返ってきた
+         return displayResult({
+            "username": authorUsername, 
+            "id": "ResourceNotFound",
+            "joined": "ResourceNotFound",
+            "country": "ResourceNotFound",
+            "images": "ResourceNotFound",
+            "device": agentData.device,
+            "browser": agentData.browser,
+            "message": "'username' is invalid."
+        });
+    }
 }
 
 // --- フローAA ---
@@ -529,10 +541,11 @@ async function AA_Flow(ユザネ, プロ番) {
     let userState = STATUS_SUCCESS; // ユザネからの初期データ取得状態
     let userData = userResult.data || {};
 
-    if (userResult.status === STATUS_NOT_FOUND || userResult.status === STATUS_ERROR) {
-        userState = STATUS_NOT_REGISTERED; // アカウントがなかった/エラー
-    } else if (userResult.status === STATUS_INVALID) {
-        userState = STATUS_ACCOUNT_INVALID; // アカウントが無効だった
+    if (userResult.status === STATUS_NOT_FOUND) {
+        userState = STATUS_NOT_REGISTERED; // アカウントがなかった
+    } else if (userResult.status === STATUS_INVALID || userResult.status === STATUS_ERROR) {
+        // Invalid username もしくは API エラーが発生した場合、無効として処理
+        userState = STATUS_ACCOUNT_INVALID; // アカウントが無効だった/エラー
     }
     
     // AA1へ: この時にJSON回収、読み取り (device, browserを記録)
@@ -563,10 +576,10 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
     }
     
     // 入手したusername,id,imagesと持っていたそのデータが合致したか
+    // プロジェクト作者名と、最初に入力されたユザネが一致しているかをチェック
     const isMatched = (userState === STATUS_SUCCESS && 
-                      userData.username === projectData.author && 
-                      userData.id === projectAuthorData.id);
-
+                      userData.username === projectData.author);
+    
     if (userState === STATUS_SUCCESS) {
         // ユザネから正しく受け取れた
         if (isMatched) {
@@ -616,6 +629,8 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
 
 // --- フローAA1B ---
 async function AA1B_Flow(ユザネ, userState, userData, agentData) {
+    // プロジェクトIDが見つからない/APIエラーのルート
+    
     if (userState === STATUS_SUCCESS) {
         // ユザネから正しく受け取れた
         return displayResult({
@@ -628,13 +643,10 @@ async function AA1B_Flow(ユザネ, userState, userData, agentData) {
             "browser": "ResourceNotFound",
             "message": "'projectId' is not shared."
         });
-    } else if (userState === STATUS_NOT_REGISTERED || userState === STATUS_ACCOUNT_INVALID) {
-        // アカウントがなかった/無効という記録があった
-        const code = userState === STATUS_NOT_REGISTERED ? "ResourceNotFound" : "Invalid username";
-        const message = userState === STATUS_NOT_REGISTERED ? "'username' is not registered and 'projectId' is not shared." : "'username' is invalid.";
-
+    } else if (userState === STATUS_NOT_REGISTERED) {
+        // アカウントが見つからなかった
         return displayResult({
-            "code": code,
+            "code": "ResourceNotFound",
             "username": ユザネ,
             "id": "ResourceNotFound",
             "joined": "ResourceNotFound",
@@ -642,13 +654,28 @@ async function AA1B_Flow(ユザネ, userState, userData, agentData) {
             "images": "ResourceNotFound",
             "device": "ResourceNotFound",
             "browser": "ResourceNotFound",
-            "message": message
+            "message": "'username' is not registered and 'projectId' is not shared."
+        });
+    } else if (userState === STATUS_ACCOUNT_INVALID) {
+        // アカウントが無効だった
+        return displayResult({
+            "code": "Invalid username",
+            "username": ユザネ,
+            "id": "ResourceNotFound",
+            "joined": "ResourceNotFound",
+            "country": "ResourceNotFound",
+            "images": "ResourceNotFound",
+            "device": "ResourceNotFound",
+            "browser": "ResourceNotFound",
+            "message": "'username' is invalid and 'projectId' is not shared."
         });
     }
 }
 
 // --- フローAA1C ---
 async function AA1C_Flow(ユザネ, userState, userData, agentData) {
+    // プロジェクトIDが無効 (Invalid project ID) のルート
+    
     if (userState === STATUS_SUCCESS) {
         // ユザネから正しく受け取れた
         return displayResult({
@@ -661,13 +688,10 @@ async function AA1C_Flow(ユザネ, userState, userData, agentData) {
             "browser": "ResourceNotFound",
             "message": "'projectId' is invalid."
         });
-    } else if (userState === STATUS_NOT_REGISTERED || userState === STATUS_ACCOUNT_INVALID) {
-        // アカウントがなかった/無効という記録があった
-        const code = userState === STATUS_NOT_REGISTERED ? "ResourceNotFound" : "Invalid username";
-        const message = userState === STATUS_NOT_REGISTERED ? "'username' is not registered and 'projectId' is invalid." : "'username' is invalid.";
-
-         return displayResult({
-            "code": code,
+    } else if (userState === STATUS_NOT_REGISTERED) {
+        // アカウントが見つからなかった
+        return displayResult({
+            "code": "ResourceNotFound",
             "username": ユザネ,
             "id": "ResourceNotFound",
             "joined": "ResourceNotFound",
@@ -675,7 +699,20 @@ async function AA1C_Flow(ユザネ, userState, userData, agentData) {
             "images": "ResourceNotFound",
             "device": "ResourceNotFound",
             "browser": "ResourceNotFound",
-            "message": message
+            "message": "'username' is not registered and 'projectId' is invalid."
+        });
+    } else if (userState === STATUS_ACCOUNT_INVALID) {
+        // アカウントが無効だった
+        return displayResult({
+            "code": "Invalid username",
+            "username": ユザネ,
+            "id": "ResourceNotFound",
+            "joined": "ResourceNotFound",
+            "country": "ResourceNotFound",
+            "images": "ResourceNotFound",
+            "device": "ResourceNotFound",
+            "browser": "ResourceNotFound",
+            "message": "'username' is invalid and 'projectId' is invalid."
         });
     }
 }
