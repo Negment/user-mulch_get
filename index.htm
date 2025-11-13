@@ -110,13 +110,20 @@ function jsonToScratchString(obj) {
 }
 
 /**
- * 結果を出力エリアに表示する
+ * 結果を出力エリアに表示する (エラーハンドリング追加)
  */
 function displayResult(result) {
+    logToScreen('[DEBUG] Attempting to display result.'); 
     if (typeof result === 'string') {
         $output.text(result);
     } else {
-        $output.html(jsonToScratchString(result));
+        // FATAL JSON ERROR回避のためtry-catchを追加
+        try {
+            $output.html(jsonToScratchString(result));
+        } catch (e) {
+            logToScreen('FATAL ERROR: Could not format/display JSON. ' + e.message, true);
+            $output.text('FATAL JSON ERROR');
+        }
     }
     $output.css('display', 'block');
     logToScreen('[END] Output successful.');
@@ -221,7 +228,15 @@ function analyzeProjectAgent(projectId) {
              if (/Windows NT 10.0/.test(userAgent)) { deviceOutput = 'Windows 10/11'; } 
             else if (/iPhone/.test(userAgent)) { deviceOutput = 'iPhone (iOS)'; } 
             else if (/iPad/.test(userAgent)) { deviceOutput = 'iPad (iPadOS)'; } 
-            // ... (他のデバイス/ブラウザ解析ロジックは省略せずに実装されていると仮定)
+            else if (/Mac OS X/.test(userAgent) && !/iPhone|iPad/.test(userAgent)) { deviceOutput = 'Mac (macOS)'; } 
+            else if (/Android/.test(userAgent)) { deviceOutput = 'Android'; } 
+            else if (/Linux/.test(userAgent)) { deviceOutput = 'Linux'; }
+            
+            if (/CriOS\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Chrome for iOS (CriOS)'; } 
+            else if (/Edg\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Edge'; } 
+            else if (/Chrome\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Chrome'; } 
+            else if (/Safari\/(\d+\.\d+)/.test(userAgent) && !/Chrome|CriOS/.test(userAgent)) { browserOutput = 'Safari'; } 
+            else if (/Firefox\/(\d+\.\d+)/.test(userAgent)) { browserOutput = 'Firefox'; }
         }
         return { device: deviceOutput, browser: browserOutput };
     })
@@ -238,29 +253,32 @@ function analyzeProjectAgent(projectId) {
  */
 async function mainFlow() {
     const params = getQueryParameters();
-    constユザネ = params.username;
-    constプロ番 = params.projectId;
+    const ユザネ = params.username;
+    const プロ番 = params.projectId;
 
-    logToScreen(`[START] Username: ${ユザネ || 'N/A'}, Project ID: ${プロ番 || 'N/A'}`);
+    logToScreen(`[FLOW] Start processing (User: ${ユザネ || 'N/A'}, Project: ${プロ番 || 'N/A'})`);
 
     // B. ユザネを受け取れたか
     if (!ユザネ) {
         // B. ユザネを受け取れていない
         if (!プロ番) {
             // B -> でない: プロ番を受け取れてない
-            // {"code":"ResourceNotFound","message":"'username' and 'projectId' do not exist."}と出力
+            logToScreen('[FLOW] B -> Not Received: Both missing. Outputting error.');
             return displayResult({code:"ResourceNotFound", message:"'username' and 'projectId' do not exist."});
         } else {
             // B -> BA: プロ番を受け取れた
+            logToScreen('[FLOW] B -> BA: Project ID received.');
             await BA_Flow(プロ番);
         }
     } else {
         // A. ユザネを受け取れた
         if (!プロ番) {
             // A -> AB: プロ番を受け取れてない
+            logToScreen('[FLOW] A -> AB: Username received, Project ID missing.');
             await AB_Flow(ユザネ);
         } else {
             // A -> AA: プロ番を受け取れた
+            logToScreen('[FLOW] A -> AA: Both received.');
             await AA_Flow(ユザネ, プロ番);
         }
     }
@@ -295,7 +313,6 @@ async function AB_Flow(ユザネ) {
             "message":"'username' is invalid and 'projectId' do not exist."
         });
     }
-    // その他のエラーはここでは考慮しないが、必要ならエラー出力を追加
 }
 
 // --- フローBA ---
@@ -304,7 +321,7 @@ async function BA_Flow(プロ番) {
     
     if (projectResult.status === STATUS_SUCCESS) {
         // データを受け取れた -> BA1へ
-        await BA1_Flow(projectResult.data.author, プロ番);
+        await BA1_Flow(projectResult.data.author, projectResult.data.id, プロ番);
     } else if (projectResult.status === STATUS_NOT_FOUND) {
         // {"error":"Resource does not exist"}と返ってきた
         return displayResult({
@@ -318,11 +335,10 @@ async function BA_Flow(プロ番) {
             "message":"'username' do not exist and 'projectId' is invalid."
         });
     }
-    // その他のエラーはここでは考慮しないが、必要ならエラー出力を追加
 }
 
 // --- フローBA1 ---
-async function BA1_Flow(authorUsername, プロ番) {
+async function BA1_Flow(authorUsername, projectId, プロ番) {
     const agentData = await analyzeProjectAgent(プロ番);
     const userResult = await getUserData(authorUsername); // プロジェクトidで回収したユザネ
 
@@ -338,8 +354,9 @@ async function BA1_Flow(authorUsername, プロ番) {
             "browser": agentData.browser,
             "message": "'username' do not exist."
         });
-    } else if (userResult.status === STATUS_NOT_FOUND) {
-        // {"error":"Resource does not exist"}と返ってきた
+    } else if (userResult.status === STATUS_NOT_FOUND || userResult.status === STATUS_INVALID) {
+        // {"error":"Resource does not exist"}と返ってきた / Invalid usernameもNotFoundとして処理
+        // プロジェクトメタデータにはユーザーIDがないため、AuthorのIDは不明なまま。
         return displayResult({
             "username": authorUsername,
             "id": "ResourceNotFound",
@@ -351,57 +368,59 @@ async function BA1_Flow(authorUsername, プロ番) {
             "message": "'username' is not registered."
         });
     } 
-    // Invalid usernameはプロジェクト作者名から取得する際には通常発生しないが、念のためここでは上記のNotFoundとして扱うか、追加のロジックが必要。
-    // フローに従い、今回はNotFoundとして処理される可能性を許容。
+    // その他のエラー (STATUS_ERROR) はここでは考慮しない
 }
 
 // --- フローAA ---
 async function AA_Flow(ユザネ, プロ番) {
     const userResult = await getUserData(ユザネ);
     let userState = STATUS_SUCCESS; // ユザネからの初期データ取得状態
-    let userData = {};
+    let userData = userResult.data || {};
 
-    if (userResult.status === STATUS_SUCCESS) {
-        userData = userResult.data;
-        // userStateはSTATUS_SUCCESSのまま
-    } else if (userResult.status === STATUS_NOT_FOUND) {
+    if (userResult.status === STATUS_NOT_FOUND) {
         userState = STATUS_NOT_REGISTERED; // アカウントがなかった
     } else if (userResult.status === STATUS_INVALID) {
         userState = STATUS_ACCOUNT_INVALID; // アカウントが無効だった
-    } else {
-        // その他のエラーの場合、ここでは処理を継続せず、最終的なエラーとして扱うべきだが、
-        // フローチャートにないので、一旦STATUS_SUCCESSとしてagentDataの取得に進む（JSONを回収する、のステップに合わせる）
-        userState = STATUS_ERROR;
+    } else if (userResult.status === STATUS_ERROR) {
+        // ユーザーAPI通信エラーの場合、処理継続は困難だが、ここではフローに従いNotFoundに近い扱いとする
+        userState = STATUS_NOT_REGISTERED; 
     }
     
     // AA1へ: この時にJSON回収、読み取り (device, browserを記録)
     const agentData = await analyzeProjectAgent(プロ番);
     const projectResult = await getProjectMetaData(プロ番);
+    let projectData = projectResult.data || {};
 
     if (projectResult.status === STATUS_SUCCESS) {
         // データを受け取れた -> AA1Aへ
-        await AA1A_Flow(ユザネ, userData, userState, agentData, projectResult.data);
+        await AA1A_Flow(ユザネ, userData, userState, agentData, projectData);
     } else if (projectResult.status === STATUS_NOT_FOUND) {
         // {"error":"Resource does not exist"}と返ってきた -> AA1Bへ
-        await AA1B_Flow(ユザネ, userState, userResult.data, agentData);
+        await AA1B_Flow(ユザネ, userState, userData, agentData);
     } else if (projectResult.status === STATUS_INVALID_PROJECT) {
         // {"error":"Invalid project ID"}と返ってきた -> AA1Cへ
-        await AA1C_Flow(ユザネ, userState, userResult.data, agentData);
+        await AA1C_Flow(ユザネ, userState, userData, agentData);
     }
-    // その他のエラーはここでは考慮しないが、必要ならエラー出力を追加
 }
 
 // --- フローAA1A ---
 async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData) {
+    // ユーザーAPIのID取得が必要なため、プロジェクトIDのauthorを使って再取得
+    let projectAuthorData = {};
+    if (projectData.author) {
+        const authorResult = await getUserData(projectData.author);
+        projectAuthorData = authorResult.data || {};
+    }
+    
     // 入手したusername,id,imagesと持っていたそのデータが合致したか
     const isMatched = (userState === STATUS_SUCCESS && 
                       userData.username === projectData.author && 
-                      userData.id === projectData.id);
+                      userData.id === projectAuthorData.id);
 
-    if (isMatched) {
-        // 合致した
-        if (userState === STATUS_SUCCESS) {
-            // ユザネから正しく受け取れた
+    if (userState === STATUS_SUCCESS) {
+        // ユザネから正しく受け取れた
+        if (isMatched) {
+            // 合致した
             return displayResult({
                 "username": userData.username,
                 "id": userData.id,
@@ -411,26 +430,21 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
                 "device": agentData.device,
                 "browser": agentData.browser
             });
+        } else {
+            // 合致しなかった
+            return displayResult({
+                "code": "Not correspond",
+                "message": "'username' and 'projectId' do not correspond."
+            });
         }
-        // 以下は「合致した」かつ「ユザネから正しく受け取れた」でないパターンで、
-        // 論理的に発生しにくいが、フローに従い処理。
-    }
-    
-    // 合致しなかった、またはその他のケース
-    if (userState === STATUS_SUCCESS) {
-        // ユザネから正しく受け取れたが、合致しなかった
-        return displayResult({
-            "code": "Not correspond",
-            "message": "'username' and 'projectId' do not correspond."
-        });
     } else if (userState === STATUS_NOT_REGISTERED) {
         // アカウントがなかった記録があった (プロジェクト作者のデータで埋める)
         return displayResult({
             "username": projectData.author,
-            "id": projectData.id,
+            "id": projectAuthorData.id || "ResourceNotFound",
             "joined": "ResourceNotFound",
             "country": "ResourceNotFound",
-            "images": projectData.images, // imagesはプロジェクト作者のものを使用
+            "images": projectAuthorData.images || "ResourceNotFound",
             "device": agentData.device,
             "browser": agentData.browser,
             "message": "'username' is not registered."
@@ -439,10 +453,10 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
         // アカウントが無効という記録があった (プロジェクト作者のデータで埋める)
         return displayResult({
             "username": projectData.author,
-            "id": projectData.id,
+            "id": projectAuthorData.id || "ResourceNotFound",
             "joined": "ResourceNotFound",
             "country": "ResourceNotFound",
-            "images": projectData.images, // imagesはプロジェクト作者のものを使用
+            "images": projectAuthorData.images || "ResourceNotFound",
             "device": agentData.device,
             "browser": agentData.browser,
             "message": "'username' is invalid."
@@ -512,15 +526,8 @@ async function AA1C_Flow(ユザネ, userState, userData, agentData) {
 // --- 実行ロジック ---
 $(document).ready(function() {
     document.title = window.location.hostname;
-    const params = getQueryParameters();
     
-    // クエリが全くない場合は、B -> でない の分岐で処理されるため、
-    // mainFlow() を呼び出すだけで良い。
-    if (!params.username && !params.projectId) {
-        // B -> でない の分岐に合わせる
-        logToScreen('[INIT] No query parameters detected. Initiating main flow.');
-    }
-    
+    // すぐにメインフローを呼び出す
     mainFlow();
 });
   </script>
