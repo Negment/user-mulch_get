@@ -68,7 +68,7 @@
   <script>
 "use strict";
 
-const VERSION = "5.0.14"; // 臨時バージョン番号を更新
+const VERSION = "5.0.15"; // 臨時バージョン番号を更新
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
 const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
@@ -193,7 +193,7 @@ function getUserData(username) {
 }
 
 /**
- * プロジェクトAPIからメタデータを取得する (5.0.14: Proxyのネットワークエラーハンドリング強化)
+ * プロジェクトAPIからメタデータを取得する 
  */
 async function getProjectMetaData(projectId) {
     logToScreen(`2. Fetching Project Meta Data for ID: ${projectId} (Proxy/JSON Check)`);
@@ -217,8 +217,9 @@ async function getProjectMetaData(projectId) {
                 logToScreen(`2a. Proxy network failed (404 Not Found). Mimicking Not Shared error.`, true);
                 return { error: 'Resource does not exist' }; 
             }
-            // その他のネットワークエラー（500など）
+            // その他のネットワークエラー（400, 500など）
             logToScreen(`2a. Proxy network failed (Status: ${jqXHR.status}). Forcing fallback.`, true);
+            // 400エラーなどはInvalid IDの可能性が高いため、STATUS_ERRORに流すために模倣せずに進める
             return { error: 'Proxy Network Error - Forcing Fallback' };
         });
 
@@ -516,14 +517,14 @@ async function BA_Flow(プロ番) {
     if (projectResult.status === STATUS_SUCCESS) {
         // データを受け取れた -> BA1へ
         await BA1_Flow(projectResult.data.author, projectResult.data.id, プロ番);
-    } else if (projectResult.status === STATUS_NOT_FOUND || projectResult.status === STATUS_ERROR) {
-        // STATUS_NOT_FOUND (未共有) / STATUS_ERROR (その他の通信エラー)
+    } else if (projectResult.status === STATUS_NOT_FOUND) { // 修正点: STATUS_ERRORを分離
+        // STATUS_NOT_FOUND (未共有)
         return displayResult({
             "code":"ResourceNotFound",
-            "message":"'username' do not exist and 'projectId' is not shared." // not shared に統一
+            "message":"'username' do not exist and 'projectId' is not shared."
         });
-    } else if (projectResult.status === STATUS_INVALID_PROJECT) {
-        // {"error":"Invalid project ID"}と返ってきた (無効)
+    } else if (projectResult.status === STATUS_INVALID_PROJECT || projectResult.status === STATUS_ERROR) { // 修正点: STATUS_ERRORを追加
+        // {"error":"Invalid project ID"}と返ってきた (無効) OR API通信エラー
         return displayResult({
             "code":"Invalid project ID", 
             "message":"'username' do not exist and 'projectId' is invalid." // invalid に統一
