@@ -3,63 +3,106 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title></title> 
+  <title>Scratch Data Analyzer</title> 
   
   <style>
+    :root {
+      --bg-color: #f9f9f9;
+      --card-bg: #ffffff;
+      --text-color: #333;
+      --accent-color: #4d97ff; /* Scratch Blue */
+      --json-key: #d32f2f;
+      --json-string: #2e7d32;
+      --json-number: #1565c0;
+      --json-boolean: #ef6c00;
+    }
+
     body {
       margin: 0;
       font-family: "Helvetica Neue", "Helvetica", Arial, sans-serif;
-      color: #000;
-      line-height: 1.5em;
+      color: var(--text-color);
+      line-height: 1.6em;
       font-size: 16px;
-      background-color: white; 
+      background-color: var(--bg-color);
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
     }
 
     #container {
-      width: auto;
-      margin: 0;
-      padding: 10px;
+      width: 100%;
+      max-width: 800px;
+      margin: 20px;
+      padding: 20px;
+      background-color: var(--card-bg);
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+      border-radius: 8px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
     }
 
-    #result-output {
-      /* 結果が出るまで完全に非表示 */
-      white-space: pre-wrap;
-      padding: 0;
-      border: none;
-      background-color: transparent;
-      color: #000;
-      display: none; 
-      font-family: monospace; 
+    /* ローディング表示 */
+    #loading {
+      text-align: center;
+      padding: 40px;
+      font-weight: bold;
+      color: #666;
+      display: none; /* JSで制御 */
     }
-    
-    /* デバッグログ専用のスタイル */
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #f3f3f3;
+      border-top: 4px solid var(--accent-color);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 15px auto;
+    }
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    /* 結果表示エリア */
+    #result-output {
+      white-space: pre-wrap;
+      font-family: "Monaco", "Consolas", monospace;
+      font-size: 14px;
+      background-color: #f4f4f4;
+      padding: 15px;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      overflow-x: auto;
+      display: none;
+    }
+
+    /* JSONシンタックスハイライト */
+    .json-key { color: var(--json-key); }
+    .json-string { color: var(--json-string); }
+    .json-number { color: var(--json-number); }
+    .json-boolean { color: var(--json-boolean); font-weight: bold; }
+    .json-null { color: #757575; font-style: italic; }
+
+    /* デバッグログ */
     #debug-log {
       margin-top: 20px;
       padding-top: 10px;
-      border-top: 1px solid #ccc;
-      white-space: pre-wrap;
-      font-size: 14px;
-      color: #777;
-    }
-    .error-log {
-      color: red;
-      font-weight: bold;
-    }
-    .json-log {
+      border-top: 2px dashed #ccc;
       font-size: 12px;
-      color: #005500;
+      color: #555;
       font-family: monospace;
+      display: none; /* デフォルト非表示 */
+    }
+    .error-log { color: #d32f2f; font-weight: bold; }
+    .json-log {
       margin: 5px 0;
-      padding: 3px;
-      border: 1px dotted #ccc;
+      padding: 5px;
+      background: #eee;
+      border-left: 3px solid #999;
     }
-    
-    #profile-image { display: none; }
-    
-    /* 非デバッグモード時のスタイル */
-    .no-debug-view #container {
-        padding: 0; /* 余計なパディングを削除 */
-    }
+
+    /* デバッグモードでない場合はログ領域をDOMから消すためのクラス */
     .no-debug-view #debug-log {
         display: none !important;
     }
@@ -69,37 +112,45 @@
 </head>
 <body>
   <div id="container">
-    <p id="result-output"></p> 
-    <p id="debug-log"></p> 
+    <div id="loading">
+      <div class="spinner"></div>
+      <div>Processing Data...</div>
+    </div>
+
+    <div id="result-output"></div> 
+
+    <div id="debug-log"></div> 
   </div>
 
   <script>
 "use strict";
 
-const VERSION = "5.0.18"; // 最終版のバージョン番号
+const VERSION = "5.1.0 (Refined)";
 const TURBOWARP_USER_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/users/';
 const TURBOWARP_PROJECT_PROXY_BASE = 'https://trampoline.turbowarp.org/proxy/projects/';
-const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/'; // メタデータ API
+const SCRATCH_API_PROJECT_BASE = 'https://api.scratch.mit.edu/projects/';
 const $output = $('#result-output');
 const $debugLog = $('#debug-log');
-let DEBUG_MODE = false; // デバッグモードフラグ
+const $loading = $('#loading');
+let DEBUG_MODE = false;
 
-// --- 定数/ステータス ---
+// --- ステータス定数 ---
 const STATUS_SUCCESS = 'Success';
-const STATUS_NOT_FOUND = 'Resource does not exist'; // ユーザー/プロジェクトが存在しない、未共有
+const STATUS_NOT_FOUND = 'Resource does not exist';
 const STATUS_INVALID = 'Invalid username'; 
 const STATUS_INVALID_PROJECT = 'Invalid project ID';
-const STATUS_ERROR = 'Error'; // その他のAPI通信エラー
+const STATUS_ERROR = 'Error';
 const STATUS_NO_INPUT = 'No input';
-const STATUS_NOT_REGISTERED = 'Account not registered'; // 内部でのみ使用
-const STATUS_ACCOUNT_INVALID = 'Account invalid'; // 内部でのみ使用
+const STATUS_NOT_REGISTERED = 'Account not registered';
+const STATUS_ACCOUNT_INVALID = 'Account invalid';
 
 // --- ヘルパー関数 ---
 
 function logToScreen(message, isError = false) {
     if (!DEBUG_MODE) return;
     const className = isError ? 'error-log' : '';
-    $debugLog.append(`<span class="${className}">[${new Date().toLocaleTimeString()}] ${message}</span><br>`);
+    const time = new Date().toLocaleTimeString();
+    $debugLog.append(`<div class="${className}">[${time}] ${message}</div>`);
 }
 
 function logJson(label, data) {
@@ -113,19 +164,15 @@ function logJson(label, data) {
     $debugLog.append(`<div class="json-log"><strong>${label}:</strong><pre>${jsonString}</pre></div>`);
 }
 
-/**
- * URLクエリパラメータから username, projectId, debug を取得し、DEBUG_MODEを設定する
- */
 function getQueryParameters() {
     const urlParams = new URLSearchParams(window.location.search);
-    
-    // DEBUG_MODE の設定
     const debugParam = urlParams.get('debug');
+    
     if (debugParam === 'true' || debugParam === '') {
         DEBUG_MODE = true;
+        $debugLog.show();
     } else {
         DEBUG_MODE = false;
-        // デバッグモードでなければ、CSSクラスを追加して非表示にする
         $('body').addClass('no-debug-view');
     }
     
@@ -136,49 +183,51 @@ function getQueryParameters() {
 }
 
 /**
- * JSONライクな文字列出力
+ * JSONをHTMLで見やすくハイライトする関数
  */
-function jsonToScratchString(obj) {
-    let parts = [];
-    for (const key in obj) {
-        if (!obj.hasOwnProperty(key)) continue;
-        const value = typeof obj[key] === 'string' 
-            ? `"${obj[key].replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` 
-            : obj[key];
-        
-        parts.push(`"${key}":${value}`);
+function syntaxHighlight(json) {
+    if (typeof json !== 'string') {
+        json = JSON.stringify(json, undefined, 2);
     }
-    return `{${parts.join(',')}}`;
+    json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
+        let cls = 'json-number';
+        if (/^"/.test(match)) {
+            if (/:$/.test(match)) {
+                cls = 'json-key';
+            } else {
+                cls = 'json-string';
+            }
+        } else if (/true|false/.test(match)) {
+            cls = 'json-boolean';
+        } else if (/null/.test(match)) {
+            cls = 'json-null';
+        }
+        return '<span class="' + cls + '">' + match + '</span>';
+    });
 }
 
-/**
- * 結果を出力エリアに表示する
- */
 function displayResult(result) {
-    logToScreen('[DEBUG] Attempting to display result.'); 
-    if (typeof result === 'string') {
-        $output.text(result);
-    } else {
-        // FATAL JSON ERROR回避のためtry-catchを追加
-        try {
-            $output.html(jsonToScratchString(result));
-        } catch (e) {
-            logToScreen('FATAL ERROR: Could not format/display JSON. ' + e.message, true);
-            $output.text('FATAL JSON ERROR');
-        }
-    }
-    $output.css('display', 'block');
-    logToScreen('[END] Output successful.');
+    logToScreen('[DEBUG] Displaying result.'); 
+    $loading.hide(); // ロード画面を隠す
     
-    // デバッグモードでない場合、ログエリアを完全に非表示にする
+    try {
+        // オブジェクトの場合はハイライト関数を通す
+        const html = syntaxHighlight(result);
+        $output.html(html).fadeIn();
+    } catch (e) {
+        logToScreen('FATAL ERROR: JSON Display failed. ' + e.message, true);
+        $output.text('FATAL JSON ERROR');
+        $output.show();
+    }
+    
     if (!DEBUG_MODE) {
         $('#debug-log').remove();
     }
 }
 
-/**
- * ユーザーAPIからデータを取得する
- */
+// --- API関数群 ---
+
 function getUserData(username) {
     logToScreen(`1. Fetching User Data for: ${username}`);
     return $.ajax({
@@ -187,11 +236,9 @@ function getUserData(username) {
     })
     .then(function(userData) {
         logJson('User Proxy Response', userData); 
-        // 存在しないユーザー名がJSONレスポンスで返ってきた場合
         if (userData.error === 'Resource does not exist' || userData.error === 'NotFound') {
             return { status: STATUS_NOT_FOUND, data: null };
         }
-        // 無効な文字を含むユーザー名がJSONレスポンスで返ってきた場合
         if (userData.error === 'Invalid username') {
             return { status: STATUS_INVALID, data: null };
         }
@@ -206,327 +253,185 @@ function getUserData(username) {
             }
         };
     })
-    .catch(function(jqXHR, textStatus, errorThrown) {
-        // API通信エラーが発生した場合
+    .catch(function(jqXHR) {
         if (jqXHR.status === 404) {
-            // 404の場合は「未登録 (Not Found)」として処理
-            logToScreen(`1. User API failed (404 Not Found). Treating as Not Found.`, true);
+            logToScreen(`1. User API 404.`, true);
             return { status: STATUS_NOT_FOUND, data: null };
         }
-        // それ以外のエラー（無効な文字による通信エラーなど）は「Invalid」として処理
-        logToScreen(`1. User API failed (Status: ${jqXHR.status}). Treating as Invalid.`, true);
+        logToScreen(`1. User API failed (Status: ${jqXHR.status}).`, true);
         return { status: STATUS_INVALID, data: null };
     });
 }
 
-/**
- * プロジェクトAPIからメタデータを取得する 
- */
 async function getProjectMetaData(projectId) {
-    logToScreen(`2. Fetching Project Meta Data for ID: ${projectId} (Proxy/JSON Check)`);
+    logToScreen(`2. Fetching Project Meta Data for ID: ${projectId}`);
     
     let authorUsername = null;
     let projectIdInJson = null;
     let title = null;
-    let status = STATUS_ERROR; // 初期値はエラー
-    let tokenData = null;
+    let status = STATUS_ERROR;
 
     try {
-        // 1. プロジェクトのトークンとメタデータを Proxy から取得
         const tokenPromise = $.ajax({
             url: TURBOWARP_PROJECT_PROXY_BASE + projectId,
             dataType: "json",
         }).then(data => data)
         .catch(jqXHR => {
-            // ネットワークエラーが発生した場合
-            if (jqXHR.status === 404) {
-                // 404の場合は「Resource does not exist」を模倣（未共有として扱う）
-                logToScreen(`2a. Proxy network failed (404 Not Found). Mimicking Not Shared error.`, true);
-                return { error: 'Resource does not exist' }; 
-            }
-            // その他のネットワークエラー（400, 500など）
-            logToScreen(`2a. Proxy network failed (Status: ${jqXHR.status}). Forcing fallback.`, true);
-            // 400エラーなどはInvalid IDの可能性が高いため、STATUS_ERRORに流す
-            return { error: 'Proxy Network Error - Forcing Fallback' };
+            if (jqXHR.status === 404) return { error: 'Resource does not exist' }; 
+            return { error: 'Proxy Network Error' };
         });
 
-        tokenData = await tokenPromise;
-        
-        logJson('Project Proxy Response (Token Data)', tokenData); 
+        const tokenData = await tokenPromise;
+        logJson('Project Proxy Response', tokenData); 
 
-        // 2. エラーチェックを行い、statusを確定させる (JSONエラーと模倣エラーの両方を捕捉)
         if (tokenData.error) {
-            if (tokenData.error === 'Resource does not exist' || tokenData.error === 'NotFound') {
-                // 存在しない、または未共有
-                status = STATUS_NOT_FOUND; 
-            } else if (tokenData.error === 'Invalid project ID') {
-                // 無効なID
-                status = STATUS_INVALID_PROJECT; 
-            } else {
-                 // 捕捉できなかったネットワークエラー
-                 status = STATUS_ERROR;
-            }
+            status = (tokenData.error === 'Resource does not exist' || tokenData.error === 'NotFound') ? STATUS_NOT_FOUND :
+                     (tokenData.error === 'Invalid project ID') ? STATUS_INVALID_PROJECT : STATUS_ERROR;
             return { status: status, data: null }; 
         }
         
-        // --- ここから成功ルート ---
-        
-        // 3. Proxyレスポンスから作者名があれば成功として即時リターン
+        // 成功ルート1: Proxyから直接取得
         if (tokenData.author && tokenData.author.username) {
-            authorUsername = tokenData.author.username;
-            projectIdInJson = tokenData.id || projectIdInJson;
-            title = tokenData.title || title;
-            status = STATUS_SUCCESS;
-            logToScreen('2b. Successfully extracted author from Proxy Metadata.');
-            
             return {
                 data: {
-                    author: authorUsername,
-                    id: projectIdInJson,
-                    title: title,
+                    author: tokenData.author.username,
+                    id: tokenData.id,
+                    title: tokenData.title,
                     visibility: tokenData.visibility || 'visible', 
                 },
-                status: status
+                status: STATUS_SUCCESS
             };
         }
         
-        logToScreen('2b. Author not found in Proxy Metadata. Proceeding to Full JSON check.');
-        
-        // 4. Proxyに作者名がなかった場合、フルJSONをダウンロード (Agent情報取得のため)
-        let token = tokenData["project_token"];
+        // 成功ルート2: フルJSONから取得
+        logToScreen('2. Author not in metadata, fetching full JSON.');
         const projectJsonText = await $.ajax({
-            url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
+            url: `https://projects.scratch.mit.edu/${projectId}/?token=${tokenData["project_token"]}`,
             dataType: "text",
         });
         
-        // 5. JSON.parse() を試みる (フルJSONからの抽出)
         try {
             const projectJson = JSON.parse(projectJsonText);
-            if (projectJson && projectJson.author && projectJson.author.username) {
+            if (projectJson?.author?.username) {
                 authorUsername = projectJson.author.username;
-                projectIdInJson = projectJson.id || projectIdInJson;
-                title = projectJson.title || title;
+                projectIdInJson = projectJson.id;
+                title = projectJson.title;
                 status = STATUS_SUCCESS;
-                logToScreen('2c. Successfully extracted author via Full JSON.parse().');
             } else {
-                 // author情報がなかった場合、エラーをスローしてcatchに移行し、正規表現ロジックへ強制移行
-                logToScreen('2c. Full JSON parse succeeded but author field was missing/null. Forcing regex fallback.', true);
-                throw new Error("Author field missing after JSON parse.");
+                throw new Error("Author field missing.");
             }
-        } catch(parseError) {
-             // 6. JSON.parse() が失敗したか、authorフィールドがなかった場合、正規表現による抽出を試みる
-             logToScreen('2d. JSON parse failed or author missing. Trying regex fallback.', true);
-
-            const authorUsernameRegex = /"author":\s*\{[^}]*?"username"\s*:\s*"([^"]+)"/s; 
-            const idRegex = /"id"\s*:\s*(\d+)/;
-            const titleRegex = /"title"\s*:\s*"(.+?)"/s;
-
-            const authorMatch = projectJsonText.match(authorUsernameRegex);
-            const idMatch = projectJsonText.match(idRegex);
-            const titleMatch = projectJsonText.match(titleRegex);
-
-            authorUsername = authorMatch ? authorMatch[1] : null; 
-            projectIdInJson = idMatch ? idMatch[1] : null;
-            title = titleMatch ? titleMatch[1] : null;
-
-            if (authorUsername) {
-                logToScreen('2e. Successfully extracted author via regex fallback.');
+        } catch(e) {
+            // 成功ルート3: 正規表現フォールバック
+            logToScreen('2. JSON parse failed/missing. Regex fallback.');
+            const authorMatch = projectJsonText.match(/"author":\s*\{[^}]*?"username"\s*:\s*"([^"]+)"/s);
+            const idMatch = projectJsonText.match(/"id"\s*:\s*(\d+)/);
+            
+            if (authorMatch) {
+                authorUsername = authorMatch[1];
+                projectIdInJson = idMatch ? idMatch[1] : null;
                 status = STATUS_SUCCESS;
-            } else {
-                logToScreen('2e. Regex fallback also failed.', true);
             }
         }
         
-        if (authorUsername) {
-            // フルJSONルートで成功した場合のリターン
+        if (status === STATUS_SUCCESS) {
             return {
-                data: {
-                    author: authorUsername,
-                    id: projectIdInJson,
-                    title: title,
-                    visibility: 'visible',
-                },
-                status: STATUS_SUCCESS // 成功状態を確定
+                data: { author: authorUsername, id: projectIdInJson, title: title, visibility: 'visible' },
+                status: STATUS_SUCCESS
             };
         }
 
     } catch(e) {
-        // ここに来るのは フルJSONダウンロード失敗時、またはステップ1でCritical Errorが再スローされた時など
-        logToScreen(`2f. Full JSON retrieval/parsing failed or critical error occurred. Trying meta-data API fallback. Error: ${e.message}`, true);
-        status = STATUS_ERROR;
+        logToScreen(`2. Metadata extraction failed. Error: ${e.message}`, true);
     }
     
-    // 7. 上記の全てで作者名抽出に失敗した場合の最終フォールバック (SCRATCH_API_PROJECT_BASE)
-    if (status === STATUS_ERROR) {
-        logToScreen('2g. Falling back to Scratch Meta Data API for author name.');
+    // 成功ルート4: Scratch API フォールバック
+    if (status !== STATUS_SUCCESS) {
+        logToScreen('2. Fallback to Scratch API.');
         try {
-            const metaData = await $.ajax({
-                url: SCRATCH_API_PROJECT_BASE + projectId,
-                dataType: "json",
-            });
-            
-            logJson('Scratch Meta Data API Response (Fallback)', metaData); 
-
-            if (metaData && metaData.author && metaData.author.username) {
-                authorUsername = metaData.author.username;
-                projectIdInJson = metaData.id || projectIdInJson;
-                title = metaData.title || title;
-                status = STATUS_SUCCESS;
-            } else {
-                // ここでも見つからない場合
-                status = STATUS_NOT_FOUND; 
+            const metaData = await $.ajax({ url: SCRATCH_API_PROJECT_BASE + projectId, dataType: "json" });
+            if (metaData?.author?.username) {
+                return {
+                    data: { author: metaData.author.username, id: metaData.id, title: metaData.title, visibility: 'visible' },
+                    status: STATUS_SUCCESS
+                };
             }
+            status = STATUS_NOT_FOUND;
         } catch(jqXHR) {
-            // HTTP ステータスコードをチェック
-            if (jqXHR.status === 404) {
-                 logToScreen(`2g. Scratch Meta Data API fallback failed (404 Not Found).`, true);
-                 status = STATUS_NOT_FOUND; // 404は未共有として扱う
-            } else {
-                 logToScreen(`2g. Scratch Meta Data API fallback failed (Other Error: ${jqXHR.status}).`, true);
-                 status = STATUS_ERROR; // その他はエラーとして扱う
-            }
+             status = (jqXHR.status === 404) ? STATUS_NOT_FOUND : STATUS_ERROR;
         }
     }
 
-    // データの組み立て（最終的に取得できた情報を使用）
-    return {
-        data: {
-            author: authorUsername,
-            id: projectIdInJson,
-            title: title,
-            visibility: 'visible', 
-        },
-        status: status
-    };
+    return { status: status, data: null };
 }
 
-/**
- * プロジェクトJSONからエージェント情報（device/browser）を取得する
- */
 function analyzeProjectAgent(projectId) {
     logToScreen(`3. Analyzing Project Agent for ID: ${projectId}`);
-    let deviceOutput = 'ResourceNotFound';
-    let browserOutput = 'ResourceNotFound';
     
-    // 1. トークンを取得
     return $.ajax({
         url: TURBOWARP_PROJECT_PROXY_BASE + projectId,
         dataType: "json",
     })
-    // 2. トークンを使ってプロジェクトのJSON全体を取得
-    .then(function (tokenData) {
-        if (tokenData.error) {
-            logToScreen(`3a. Project Token JSON Error (${tokenData.error}). Skipping Agent Analysis.`, true);
-            return $.Deferred().reject('Token JSON Error').promise();
-        }
-        let token = tokenData["project_token"];
+    .then(tokenData => {
+        if (tokenData.error) return $.Deferred().reject('Token Error').promise();
         return $.ajax({
-            url: `https://projects.scratch.mit.edu/${projectId}/?token=${token}`,
+            url: `https://projects.scratch.mit.edu/${projectId}/?token=${tokenData["project_token"]}`,
             dataType: "text",
         });
     })
-    // 3. エージェント文字列を抽出・解析 (識別子直接抽出ロジック)
-    .then(function (projectJson) {
-        const agentRegex = /"agent"\s*:\s*"(.+?)"/s;
-        const match = projectJson.match(agentRegex);
+    .then(projectJson => {
+        const match = projectJson.match(/"agent"\s*:\s*"(.+?)"/s);
+        if (!match || !match[1]) return { device: 'ResourceNotFound', browser: 'ResourceNotFound' };
         
-        if (match && match[1]) {
-            const userAgent = match[1];
-            
-            // 1. デバイス/OS情報（括弧内の情報全体）の抽出
-            // ほとんどのUAは 'Mozilla/5.0 (デバイス情報)' の形式なので、括弧内の情報を取得
-            let osPart = userAgent.match(/\((.*?)\)/);
-            if (osPart && osPart[1]) {
-                 // 括弧内の文字列をそのまま、または整形して使用
-                // セミコロンとスペースをカンマとスペースに置き換え、見やすくする
-                deviceOutput = osPart[1].trim().replace(/; /g, ', '); 
-            }
-            
-            // 2. ブラウザ情報（主要なブラウザ/バージョン）の抽出
-            // Chrome, CriOS, Firefox, Edge, Safari のパターンとバージョンを抽出
-            let browserPart = userAgent.match(/(Chrome|CriOS|Firefox|Edg|Safari)\/(\d+(\.\d+){1,3})/g);
+        const userAgent = match[1];
+        let device = 'Unknown Device';
+        let browser = 'Unknown Browser';
+        
+        // Device Parsing
+        const osPart = userAgent.match(/\((.*?)\)/);
+        if (osPart && osPart[1]) device = osPart[1].trim().replace(/; /g, ', ');
+        else if (device === 'Unknown Device' && osPart) device = osPart[1]; // Fallback
 
-            if (browserPart && browserPart.length > 0) {
-                // 配列をカンマ区切りで結合して表示
-                browserOutput = browserPart.join(', '); 
-            } else if (userAgent.includes("Trident")) {
-                // IE (Trident) のためのフォールバック
-                browserOutput = "Internet Explorer"; 
-            } else {
-                 // どちらにもヒットしなかった場合は、ブラウザ情報なしとする
-                 browserOutput = 'Unknown Browser';
-            }
-            
-            // 抽出できなかった場合の最終フォールバック（deviceOutput）
-            if (deviceOutput === 'ResourceNotFound' && osPart) {
-                // 括弧内情報がある場合は、それを設定
-                deviceOutput = osPart[1].trim();
-            } else if (deviceOutput === 'ResourceNotFound') {
-                 // 括弧内情報がなければそのまま
-                 deviceOutput = 'Unknown Device';
-            }
-            
-        }
-        
-        // UA文字列自体がなければResourceNotFoundを維持
-        if (!match || !match[1]) {
-             deviceOutput = 'ResourceNotFound';
-             browserOutput = 'ResourceNotFound';
-        }
-        
-        return { device: deviceOutput, browser: browserOutput };
+        // Browser Parsing
+        const browserPart = userAgent.match(/(Chrome|CriOS|Firefox|Edg|Safari)\/(\d+(\.\d+){1,3})/g);
+        if (browserPart && browserPart.length > 0) browser = browserPart.join(', ');
+        else if (userAgent.includes("Trident")) browser = "Internet Explorer";
+
+        return { device: device, browser: browser };
     })
-    .catch(function(error) {
-        // Agent Analysisが失敗した場合はResourceNotFoundを返す
-        logToScreen(`3. Project Agent Analysis failed.`, true);
+    .catch(() => {
         return { device: 'ResourceNotFound', browser: 'ResourceNotFound' };
     });
 }
 
-// --- メイン処理フロー ---
+// --- メイン処理フロー (ロジックはオリジナルを維持) ---
 
-/**
- * 全ての処理を統括する関数
- */
 async function mainFlow() {
+    $loading.show(); // ローディング開始
+    
     const params = getQueryParameters();
     const ユザネ = params.username;
     const プロ番 = params.projectId;
 
-    logToScreen(`[FLOW] Start processing (Version: ${VERSION}, User: ${ユザネ || 'N/A'}, Project: ${プロ番 || 'N/A'})`);
+    logToScreen(`[FLOW] Start processing (User: ${ユザネ}, Project: ${プロ番})`);
 
-    // B. ユザネを受け取れたか
     if (!ユザネ) {
-        // B. ユザネを受け取れていない
         if (!プロ番) {
-            // B -> でない: プロ番を受け取れてない
-            logToScreen('[FLOW] B -> Not Received: Both missing. Outputting error.');
             return displayResult({code:"ResourceNotFound", message:"'username' and 'projectId' do not exist."});
         } else {
-            // B -> BA: プロ番を受け取れた
-            logToScreen('[FLOW] B -> BA: Project ID received.');
             await BA_Flow(プロ番);
         }
     } else {
-        // A. ユザネを受け取れた
         if (!プロ番) {
-            // A -> AB: プロ番を受け取れてない
-            logToScreen('[FLOW] A -> AB: Username received, Project ID missing.');
             await AB_Flow(ユザネ);
         } else {
-            // A -> AA: プロ番を受け取れた
-            logToScreen('[FLOW] A -> AA: Both received.');
             await AA_Flow(ユザネ, プロ番);
         }
     }
 }
 
-// --- フローAB ---
 async function AB_Flow(ユザネ) {
     const userResult = await getUserData(ユザネ);
-
     if (userResult.status === STATUS_SUCCESS) {
-        // データを受け取れた
         return displayResult({
             "username": userResult.data.username,
             "id": userResult.data.id,
@@ -538,7 +443,6 @@ async function AB_Flow(ユザネ) {
             "message": "'projectId' do not exist."
         });
     } else if (userResult.status === STATUS_NOT_FOUND) {
-        // {"error":"Resource does not exist"}と返ってきた (未登録)
         return displayResult({
             "code":"ResourceNotFound", 
             "username": ユザネ, 
@@ -551,7 +455,6 @@ async function AB_Flow(ユザネ) {
             "message":"'username' is not registered and 'projectId' do not exist."
         });
     } else if (userResult.status === STATUS_INVALID) {
-        // {"error":"Invalid username"}またはAPIエラーとしてInvalidと返ってきた
         return displayResult({
             "code":"Invalid username", 
             "username": ユザネ, 
@@ -566,35 +469,26 @@ async function AB_Flow(ユザネ) {
     }
 }
 
-// --- フローBA ---
 async function BA_Flow(プロ番) {
     const projectResult = await getProjectMetaData(プロ番);
-    
     if (projectResult.status === STATUS_SUCCESS) {
-        // データを受け取れた -> BA1へ
         await BA1_Flow(projectResult.data.author, projectResult.data.id, プロ番);
     } else if (projectResult.status === STATUS_NOT_FOUND) { 
-        // STATUS_NOT_FOUND (未共有)
         return displayResult({
             "code":"ResourceNotFound",
             "message":"'username' do not exist and 'projectId' is not shared."
         });
-    } else if (projectResult.status === STATUS_INVALID_PROJECT || projectResult.status === STATUS_ERROR) { 
-        // 無効なID（JSONエラー） OR その他の通信エラー（400エラーなど）
+    } else { 
         return displayResult({
             "code":"Invalid project ID", 
-            "message":"'username' do not exist and 'projectId' is invalid." // invalid に統一
+            "message":"'username' do not exist and 'projectId' is invalid."
         });
     }
 }
 
-// --- フローBA1 ---
 async function BA1_Flow(authorUsername, projectId, プロ番) {
     const agentData = await analyzeProjectAgent(プロ番);
-    
-    // authorUsernameがnullの場合は、ユーザーデータ取得をスキップ
     if (!authorUsername) {
-         logToScreen('1. Fetching User Data for: null (Skipping real fetch due to null author)', true);
          return displayResult({
             "username": null, 
             "id": "ResourceNotFound",
@@ -606,11 +500,9 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "message": "'username' is not registered." 
         });
     }
-
-    const userResult = await getUserData(authorUsername); // プロジェクトidで回収したユザネ
+    const userResult = await getUserData(authorUsername);
 
     if (userResult.status === STATUS_SUCCESS) {
-        // データを受け取れた
         return displayResult({
             "username": userResult.data.username,
             "id": userResult.data.id,
@@ -622,7 +514,6 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "message": "'username' do not exist."
         });
     } else if (userResult.status === STATUS_NOT_FOUND) {
-        // {"error":"Resource does not exist"}と返ってきた (プロジェクト作者が存在しない稀なケース)
         return displayResult({
             "username": authorUsername, 
             "id": "ResourceNotFound",
@@ -633,8 +524,7 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
             "browser": agentData.browser,
             "message": "'username' is not registered."
         });
-    } else if (userResult.status === STATUS_INVALID) {
-        // {"error":"Invalid username"}またはAPIエラーとしてInvalidと返ってきた
+    } else {
          return displayResult({
             "username": authorUsername, 
             "id": "ResourceNotFound",
@@ -648,54 +538,38 @@ async function BA1_Flow(authorUsername, projectId, プロ番) {
     }
 }
 
-// --- フローAA ---
 async function AA_Flow(ユザネ, プロ番) {
     const userResult = await getUserData(ユザネ);
-    let userState = STATUS_SUCCESS; // ユザネからの初期データ取得状態
+    let userState = STATUS_SUCCESS;
     let userData = userResult.data || {};
 
-    if (userResult.status === STATUS_NOT_FOUND) {
-        userState = STATUS_NOT_REGISTERED; // アカウントがなかった
-    } else if (userResult.status === STATUS_INVALID) {
-        // Invalid username または API通信エラー（無効な文字）の場合
-        userState = STATUS_ACCOUNT_INVALID; 
-    }
+    if (userResult.status === STATUS_NOT_FOUND) userState = STATUS_NOT_REGISTERED;
+    else if (userResult.status === STATUS_INVALID) userState = STATUS_ACCOUNT_INVALID;
     
-    // AA1へ: この時にJSON回収、読み取り (device, browserを記録)
     const agentData = await analyzeProjectAgent(プロ番);
     const projectResult = await getProjectMetaData(プロ番);
     let projectData = projectResult.data || {};
 
     if (projectResult.status === STATUS_SUCCESS) {
-        // データを受け取れた -> AA1Aへ
         await AA1A_Flow(ユザネ, userData, userState, agentData, projectData);
     } else if (projectResult.status === STATUS_NOT_FOUND) {
-        // {"error":"Resource does not exist"}と返ってきた -> AA1Bへ (未共有)
         await AA1B_Flow(ユザネ, userState, userData, agentData);
-    } else if (projectResult.status === STATUS_INVALID_PROJECT || projectResult.status === STATUS_ERROR) {
-        // {"error":"Invalid project ID"}と返ってきた OR API通信エラー-> AA1Cへ (無効)
+    } else {
         await AA1C_Flow(ユザネ, userState, userData, agentData);
     }
 }
 
-// --- フローAA1A ---
 async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData) {
-    // プロジェクト作者の完全なユーザー情報を取得
     let projectAuthorData = {};
-    // projectData.authorがnullの場合は、getUserDataを呼ばないようガード
     if (projectData.author) {
         const authorResult = await getUserData(projectData.author);
         projectAuthorData = authorResult.data || {};
     }
     
-    // 入手したusername,id,imagesと持っていたそのデータが合致したか
-    const isMatched = (userState === STATUS_SUCCESS && 
-                      userData.username === projectData.author);
+    const isMatched = (userState === STATUS_SUCCESS && userData.username === projectData.author);
     
     if (userState === STATUS_SUCCESS) {
-        // ユザネから正しく受け取れた
         if (isMatched) {
-            // 合致した
             return displayResult({
                 "username": userData.username,
                 "id": userData.id,
@@ -706,14 +580,12 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
                 "browser": agentData.browser
             });
         } else {
-            // 合致しなかった
             return displayResult({
                 "code": "Not correspond",
                 "message": "'username' and 'projectId' do not correspond."
             });
         }
     } else if (userState === STATUS_NOT_REGISTERED) {
-        // アカウントがなかった記録があった (プロジェクト作者のデータで埋める)
         return displayResult({
             "username": projectData.author,
             "id": projectAuthorData.id || "ResourceNotFound",
@@ -722,10 +594,9 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
             "images": projectAuthorData.images || "ResourceNotFound",
             "device": agentData.device,
             "browser": agentData.browser,
-            "message": `'input username' (${ユザネ}) is not registered.` // メッセージを明確化
+            "message": `'input username' (${ユザネ}) is not registered.`
         });
     } else if (userState === STATUS_ACCOUNT_INVALID) {
-        // アカウントが無効という記録があった (プロジェクト作者のデータで埋める)
         return displayResult({
             "username": projectData.author,
             "id": projectAuthorData.id || "ResourceNotFound",
@@ -734,17 +605,13 @@ async function AA1A_Flow(ユザネ, userData, userState, agentData, projectData)
             "images": projectAuthorData.images || "ResourceNotFound",
             "device": agentData.device,
             "browser": agentData.browser,
-            "message": `'input username' (${ユザネ}) is invalid.` // メッセージを明確化
+            "message": `'input username' (${ユザネ}) is invalid.`
         });
     }
 }
 
-// --- フローAA1B (Project Not Found / Not Shared) ---
 async function AA1B_Flow(ユザネ, userState, userData, agentData) {
-    // プロジェクトIDが見つからない/未共有のルート
-    
     if (userState === STATUS_SUCCESS) {
-        // ユザネから正しく受け取れた
         return displayResult({
             "username": userData.username,
             "id": userData.id,
@@ -756,7 +623,6 @@ async function AA1B_Flow(ユザネ, userState, userData, agentData) {
             "message": "'projectId' is not shared."
         });
     } else if (userState === STATUS_NOT_REGISTERED) {
-        // アカウントが見つからなかった
         return displayResult({
             "code": "ResourceNotFound",
             "username": ユザネ,
@@ -766,10 +632,9 @@ async function AA1B_Flow(ユザネ, userState, userData, agentData) {
             "images": "ResourceNotFound",
             "device": "ResourceNotFound",
             "browser": "ResourceNotFound",
-            "message": `'input username' (${ユザネ}) is not registered and 'projectId' is not shared.` // メッセージを明確化
+            "message": `'input username' (${ユザネ}) is not registered and 'projectId' is not shared.`
         });
     } else if (userState === STATUS_ACCOUNT_INVALID) {
-        // アカウントが無効だった
         return displayResult({
             "code": "Invalid username",
             "username": ユザネ,
@@ -779,17 +644,13 @@ async function AA1B_Flow(ユザネ, userState, userData, agentData) {
             "images": "ResourceNotFound",
             "device": "ResourceNotFound",
             "browser": "ResourceNotFound",
-            "message": `'input username' (${ユザネ}) is invalid and 'projectId' is not shared.` // メッセージを明確化
+            "message": `'input username' (${ユザネ}) is invalid and 'projectId' is not shared.`
         });
     }
 }
 
-// --- フローAA1C (Project Invalid / Error) ---
 async function AA1C_Flow(ユザネ, userState, userData, agentData) {
-    // プロジェクトIDが無効 (Invalid project ID) のルート
-    
     if (userState === STATUS_SUCCESS) {
-        // ユザネから正しく受け取れた
         return displayResult({
             "username": userData.username,
             "id": userData.id,
@@ -801,7 +662,6 @@ async function AA1C_Flow(ユザネ, userState, userData, agentData) {
             "message": "'projectId' is invalid."
         });
     } else if (userState === STATUS_NOT_REGISTERED) {
-        // アカウントが見つからなかった
         return displayResult({
             "code": "ResourceNotFound",
             "username": ユザネ,
@@ -811,10 +671,9 @@ async function AA1C_Flow(ユザネ, userState, userData, agentData) {
             "images": "ResourceNotFound",
             "device": "ResourceNotFound",
             "browser": "ResourceNotFound",
-            "message": `'input username' (${ユザネ}) is not registered and 'projectId' is invalid.` // メッセージを明確化
+            "message": `'input username' (${ユザネ}) is not registered and 'projectId' is invalid.`
         });
     } else if (userState === STATUS_ACCOUNT_INVALID) {
-        // アカウントが無効だった
         return displayResult({
             "code": "Invalid username",
             "username": ユザネ,
@@ -824,17 +683,12 @@ async function AA1C_Flow(ユザネ, userState, userData, agentData) {
             "images": "ResourceNotFound",
             "device": "ResourceNotFound",
             "browser": "ResourceNotFound",
-            "message": `'input username' (${ユザネ}) is invalid and 'projectId' is invalid.` // メッセージを明確化
+            "message": `'input username' (${ユザネ}) is invalid and 'projectId' is invalid.`
         });
     }
 }
 
-
-// --- 実行ロジック ---
 $(document).ready(function() {
-    document.title = window.location.hostname;
-    
-    // すぐにメインフローを呼び出す
     mainFlow();
 });
   </script>
